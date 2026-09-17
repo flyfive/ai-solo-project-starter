@@ -1,0 +1,39 @@
+[generic]
+label = "通用软件项目"
+suggested_docs = []
+guidance = "先冻结范围、验收标准和核心架构，再进入代码批次。"
+
+[web-fullstack]
+label = "Web 全栈项目"
+suggested_docs = ["API_DESIGN", "DATA_MODEL", "UI_SPEC", "RUNBOOK"]
+guidance = "关注页面信息架构、前后端契约、数据库迁移、联调、构建和部署。"
+
+[desktop-windows]
+label = "Windows 桌面项目"
+suggested_docs = ["UI_SPEC", "RUNBOOK", "SECURITY", "DEPLOYMENT"]
+guidance = "关注安装与升级、文件系统权限、进程生命周期、托盘行为和打包签名。"
+
+[android]
+label = "Android 项目"
+suggested_docs = ["UI_SPEC", "API_DESIGN", "SECURITY", "DEPLOYMENT"]
+guidance = "关注生命周期、权限、不同屏幕适配、离线行为、签名和安装包验收。"
+
+[python-local-tool]
+label = "Python 本地工具"
+suggested_docs = ["RUNBOOK", "DATA_MODEL", "TEST_PLAN"]
+guidance = "关注环境可复现性、依赖锁定、路径兼容、错误恢复和本地数据安全。"
+
+[hardware-pcb]
+label = "硬件 / PCB 项目"
+suggested_docs = ["HARDWARE_RULES", "BOM", "TEST_PLAN"]
+guidance = "关注器件约束、原理图与布局规则、ERC/DRC、制造能力、测试点和 ECO 关闭条件。"
+
+[ai-automation]
+label = "AI 自动化项目"
+suggested_docs = ["AUTOMATION_WORKFLOWS", "SECURITY", "RUNBOOK", "TEST_PLAN"]
+guidance = "关注授权边界、真实外部操作、幂等性、重试、审计日志、人工确认和失败恢复。"
+
+[data-platform]
+label = "数据平台 / 数据分析项目"
+suggested_docs = ["DATA_MODEL", "DATA_PIPELINE", "RUNBOOK", "TEST_PLAN"]
+guidance = "关注数据口径、血缘、质量门禁、增量策略、回填、性能和可复现性。"

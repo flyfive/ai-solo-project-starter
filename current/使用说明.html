@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>个人 AI 项目模板 V1.9.0 使用说明</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d9e0e7;
+      --accent: #2457d6;
+      --accent-hover: #1946b8;
+      --ok: #137a4a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      line-height: 1.6;
+    }
+
+    main {
+      width: min(820px, calc(100% - 32px));
+      margin: 40px auto 64px;
+    }
+
+    header { margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; font-size: clamp(26px, 4vw, 38px); }
+    h2 { margin: 0 0 16px; font-size: 20px; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); }
+
+    .card {
+      margin: 16px 0;
+      padding: 24px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 6px 24px rgba(20, 35, 60, 0.05);
+    }
+
+    .step {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      margin-right: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 14px;
+    }
+
+    label {
+      display: block;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      margin-top: 6px;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    textarea { resize: vertical; }
+    .prompt { min-height: 240px; background: #f8fafc; font-size: 14px; }
+
+    button {
+      margin-top: 14px;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover { background: var(--accent-hover); }
+    .copied { margin-left: 10px; color: var(--ok); font-size: 14px; }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: #eef2f6;
+      font-family: Consolas, monospace;
+    }
+
+    .notice {
+      padding: 12px 14px;
+      border-left: 4px solid var(--accent);
+      background: #eef4ff;
+      border-radius: 6px;
+    }
+
+    ol { margin-bottom: 0; padding-left: 24px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>V1.9.0 分层上下文使用说明</h1>
+      <p class="muted">手动选择 Lite 或 Standard；Auto 仅作为可解释建议。</p>
+    </header>
+
+    <section class="card">
+      <h2><span class="step">1</span>填写项目信息</h2>
+
+      <label for="templatePath">模板目录（预填为作者示例，请核对实际路径）</label>
+      <input id="templatePath" value="D:\project\AI_Solo_Project_Starter\current">
+
+      <label for="projectName">项目名称</label>
+      <input id="projectName" placeholder="例如：个人财务管理工具">
+
+      <label for="description">项目简介与最终交付目标</label>
+      <textarea id="description" rows="4" placeholder="例如：开发一款供我个人使用的 Windows 桌面财务管理工具，最终交付可安装程序、使用说明和源代码。"></textarea>
+
+      <label for="targetPath">正式项目目录</label>
+      <input id="targetPath" placeholder="填写独立的新项目目录，不要使用模板目录">
+
+      <label for="profile">项目类型</label>
+      <select id="profile">
+        <option value="请根据项目简介选择最合适的 Profile">由 AI 判断</option>
+        <option value="使用 generic Profile">通用项目</option>
+        <option value="使用 web-fullstack Profile">Web 全栈</option>
+        <option value="使用 desktop-windows Profile">Windows 桌面</option>
+        <option value="使用 android Profile">Android</option>
+        <option value="使用 python-local-tool Profile">Python 本地工具</option>
+        <option value="使用 hardware-pcb Profile">硬件 / PCB</option>
+        <option value="使用 ai-automation Profile">AI 自动化</option>
+        <option value="使用 data-platform Profile">数据平台</option>
+      </select>
+
+      <label for="governanceMode">治理模式</label>
+      <select id="governanceMode">
+        <option value="standard">Standard：正式交付、客户或不确定时（推荐）</option>
+        <option value="lite">Lite：一至三天、单执行器、自用小项目</option>
+        <option value="auto">Auto：由 AI 给出可解释建议</option>
+      </select>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">2</span>让 AI 创建项目</h2>
+      <p>在 AI 开发工具中打开模板目录，复制并发送下面的内容。</p>
+      <textarea id="initPrompt" class="prompt" readonly></textarea>
+      <button type="button" onclick="copyPrompt('initPrompt', 'initStatus')">复制初始化提示词</button>
+      <span id="initStatus" class="copied" aria-live="polite"></span>
+      <p class="muted">也可以直接双击模板目录中的 <code>CREATE_PROJECT.cmd</code>。</p>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">3</span>打开新项目并正式开始</h2>
+      <p>项目创建成功后，在 AI 开发工具中打开新生成的正式项目目录，再复制并发送下面的内容。</p>
+      <textarea id="startPrompt" class="prompt" readonly></textarea>
+      <button type="button" onclick="copyPrompt('startPrompt', 'startStatus')">复制项目接管提示词</button>
+      <span id="startStatus" class="copied" aria-live="polite"></span>
+    </section>
+
+    <section class="card">
+      <h2>以后怎么用</h2>
+      <ol>
+        <li>始终在正式项目目录中与 AI 交流。</li>
+        <li>直接说明新需求、反馈或修改意见，不需要手动维护文档。</li>
+        <li>不要在模板目录里开发，也不要把整个模板目录复制成项目。</li>
+      </ol>
+      <p class="notice"><strong>项目变大时：</strong>Lite 可以在原目录中单向升级 Standard，保留 Git、需求编号、需求历史和代码。若当前批次已经 BLOCKED/PARTIAL，AI 会先安全挂起；升级后必须完成 Standard 基线审计，再恢复开发。</p>
+    </section>
+  </main>
+
+  <script>
+    const fields = ["templatePath", "projectName", "description", "targetPath", "profile", "governanceMode"];
+
+    function valueOf(id, fallback) {
+      const value = document.getElementById(id).value.trim();
+      return value || fallback;
+    }
+
+    function updatePrompts() {
+      const templatePath = valueOf("templatePath", "D:\\project\\AI_Solo_Project_Starter\\current");
+      const projectName = valueOf("projectName", "尚未填写");
+      const description = valueOf("description", "尚未填写，请先向我确认");
+      const targetPath = valueOf("targetPath", "尚未填写");
+      const profile = document.getElementById("profile").value;
+      const governanceMode = document.getElementById("governanceMode").value;
+      const governanceText = {
+        auto: "auto，由 AI 根据项目描述建议并说明理由；客户交付、权限、敏感数据、支付、迁移、生产部署、多平台或硬件必须建议 Standard",
+        lite: "lite，极简治理",
+        standard: "standard，标准治理"
+      }[governanceMode];
+
+      document.getElementById("initPrompt").value =
+`请使用以下个人 AI 开发项目启动模板 V1.9.0，为我初始化一个新项目。
+
+模板目录：${templatePath}
+项目名称：${projectName}
+项目简介与最终交付目标：${description}
+目标目录：${targetPath}
+项目类型：${profile}
+治理模式：${governanceText}
+
+执行前必须核对上述模板目录在本机存在，并核对目标目录是独立的新项目位置；预填或留空回退只是作者示例，不是自动识别，未填写或不正确时先更正，不按示例盲目创建。
+请先阅读模板中的 README.md 和 QUICK_START.md，并使用模板提供的正式初始化入口创建项目。不要修改模板目录，也不要把模板根目录直接当成正式项目。
+
+初始化必须完成 Git 仓库、初始提交、Git Hook 和健康检查。完成后告诉我：
+1. 实际项目目录；
+2. 使用的 Profile；
+3. 项目文件数量；
+4. Git 和 Hook 状态；
+5. 健康检查结果；
+6. 最终选择的治理模式及理由；
+7. 是否存在需要我决定的问题。`;
+
+      const liteTakeoverRules = "按 Lite 规则确认需求基线，执行与风险相称的测试及适用的人工验收，保存当前状态、需求修订和执行历史。";
+      const standardTakeoverRules = `本项目额外执行以下交付纪律：
+1. 只有状态为 ready 的正式交付物才能验收和结案；
+2. 项目所有者验收后，如果交付物或交付文档发生变化，必须重新验收；
+3. 项目结案后不得修改交付清单；继续开发必须由项目所有者明确授权并使用更高版本重开。`;
+      const takeoverRules = {
+        lite: liteTakeoverRules,
+        standard: standardTakeoverRules,
+        auto: `先读取新项目 PROJECT.toml 的 [governance].mode，以初始化后实际落地的 Lite/Standard 为准，不凭项目描述重新猜测。Auto 不是第三种治理模式；若无法确定实际模式，先核对配置，不自行选择。
+实际模式为 Lite 时：${liteTakeoverRules}不得套用 Standard 交付纪律。
+仅当实际模式为 Standard 时，执行以下纪律：
+${standardTakeoverRules}`
+      }[governanceMode];
+
+      document.getElementById("startPrompt").value =
+`请接管当前项目。
+
+先按照 START_HERE.md 和 PROJECT.toml 中的当前治理模式完成启动检查，读取Hot Context、当前状态与活动批次manifest，按R/C/DEC引用加载相关正式正文与AC；不默认全文读取需求、架构、历史日志或测试原始输出。先建立或确认需求基线，不要立即开始写代码。
+
+项目名称：${projectName}
+项目目标：${description}
+
+${takeoverRules}
+
+请把需要长期遵守的信息写入项目持久文档。完成接管后，向我总结当前理解、尚待确认的需求和建议的第一阶段计划。`;
+    }
+
+    async function copyPrompt(promptId, statusId) {
+      const box = document.getElementById(promptId);
+      const status = document.getElementById(statusId);
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(box.value);
+        } else {
+          box.focus();
+          box.select();
+          document.execCommand("copy");
+          window.getSelection().removeAllRanges();
+        }
+        status.textContent = "已复制";
+      } catch (error) {
+        status.textContent = "复制失败，请手动全选复制";
+      }
+      setTimeout(() => { status.textContent = ""; }, 2400);
+    }
+
+    fields.forEach((id) => document.getElementById(id).addEventListener("input", updatePrompts));
+    updatePrompts();
+  </script>
+</body>
+</html>

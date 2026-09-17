@@ -1,0 +1,39 @@
+#!/bin/sh
+# Copyright (c) 2026 FeiXiaorong
+# SPDX-License-Identifier: MIT
+# Template-origin code; retain the license in NOTICE.template.txt.
+# V1.9.0 强制文档写回提交前检查。用户无需手动运行。
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
+cd "$ROOT" || exit 2
+
+usable_python() {
+  "$@" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 2)' >/dev/null 2>&1
+}
+
+run_with() {
+  "$@" tools/project.py pre-commit-check
+  exit $?
+}
+
+# 优先使用初始化时已经实际运行成功的解释器路径。
+if [ -s "$ROOT/.githooks/python-path" ]; then
+  IFS= read -r PYTHON_BIN < "$ROOT/.githooks/python-path"
+  if [ -n "$PYTHON_BIN" ] && usable_python "$PYTHON_BIN"; then
+    run_with "$PYTHON_BIN"
+  fi
+fi
+
+# Windows Python Launcher 优先于可能指向 Microsoft Store 占位入口的 python。
+if command -v py >/dev/null 2>&1 && usable_python py -3; then
+  run_with py -3
+fi
+if command -v python3 >/dev/null 2>&1 && usable_python python3; then
+  run_with python3
+fi
+if command -v python >/dev/null 2>&1 && usable_python python; then
+  run_with python
+fi
+
+echo "PRE_COMMIT_REJECTED"
+echo "FAIL 未找到可实际运行的 Python 3.11+，无法执行 V1.9.0 文档写回检查。"
+exit 2

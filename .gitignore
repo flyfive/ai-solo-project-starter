@@ -1,0 +1,25 @@
+/versions/
+/releases/
+/validation/
+/maintenance/workspace-migration/
+__pycache__/
+*.py[cod]
+.test-runtime/
+
+# Local history and private maintenance; no disk deletion.
+/maintenance/*
+!/maintenance/PUBLIC_READINESS.md
+/current/.github/workflows/regression.yml
+/current/VALIDATION_REPORT.md
+/current/CONTEXT_EFFICIENCY_REPORT.md
+/current/LONG_PROJECT_SIMULATION_REPORT.md
+/current/V1.9.0_CONTEXT_EFFICIENCY_AUDIT.md
+/current/V1.8.1_SOURCE_MANIFEST.json
+/current/PACKAGE_CONTENTS.md
+.pytest_cache/
+node_modules/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
