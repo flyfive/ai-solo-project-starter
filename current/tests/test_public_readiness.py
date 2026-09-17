@@ -2,6 +2,7 @@
 import re
 import shutil
 import json
+import os
 import unittest
 from pathlib import Path
 from test_regression import PYTHON, ROOT, STARTER, ProjectHarness, make_temp_dir, remove_tree, run
@@ -74,6 +75,33 @@ class PublicReadinessTests(unittest.TestCase):
         run([PYTHON,'-B',str(template/'starter.py'),'init','--target',str(target),'--name','License fixture','--description','Current-only initialization fixture','--profile','generic','--governance-mode','lite'])
         self.assertTrue((target/'NOTICE.template.txt').read_text('utf-8').endswith((template/'LICENSE').read_text('utf-8')))
         self.assertFalse((target/'LICENSE').exists())
+
+    def test_workflow_runner_context_is_step_scoped_and_config_is_shared(self):
+        # Narrow checks for this workflow's known layout, not a general YAML parser.
+        text=(ROOT.parent/'.github/workflows/regression.yml').read_text('utf-8')
+        job_env=text.split('    env:\n',1)[1].split('    steps:\n',1)[0]
+        self.assertNotIn('runner.',job_env)
+        self.assertNotIn('GIT_CONFIG_GLOBAL:',job_env)
+        prepare=text.split('      - name: Check runner Git and installed test dependencies\n',1)[1].split('      - name:',1)[0]
+        regression=text.split('      - name: Run isolated regression\n',1)[1]
+        setting='          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/template-test.gitconfig'
+        self.assertIn(setting,prepare)
+        self.assertIn(setting,regression)
+        self.assertEqual(text.count(setting),2)
+        self.assertIn('python -B run_tests.py --report-dir ../validation/ci',regression)
+        self.assertNotIn('continue-on-error',text)
+        self.assertIn('fail-fast: false',text)
+        self.assertIn("os: [ubuntu-latest, windows-latest]",text)
+        self.assertIn("python-version: ['3.11', '3.14']",text)
+        base=make_temp_dir('ci-env-');self.addCleanup(remove_tree,base)
+        path=base/'template-test.gitconfig'
+        env=os.environ.copy();env['GIT_CONFIG_GLOBAL']=str(path)
+        match=re.search(r'python -c "([^"\n]+)"',prepare)
+        self.assertIsNotNone(match)
+        run([PYTHON,'-c',match.group(1)],env=env)
+        # A real child process using the regression step's same environment, no full suite.
+        output=run([PYTHON,'-c',"import os,pathlib; p=pathlib.Path(os.environ['GIT_CONFIG_GLOBAL']); assert p.read_bytes()==b''; print(p)"] ,env=env)
+        self.assertEqual(output.stdout.strip(),str(path))
 
     def test_workflow_is_at_root_with_no_publish_or_log_upload(self):
         # Configuration text check, not a remote CI execution claim.
