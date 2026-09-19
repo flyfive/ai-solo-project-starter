@@ -570,7 +570,7 @@ def verify_evidence(root, p, refs, minimum, batch_id=None):
             raise SystemExit('Evidence summary has no raw evidence')
         active = p.read_json(root / p.ACTIVE_FILE, default=None)
         if data.get('schema') == 'acceptance/1':
-            verify_hardening_evidence(root, p, data, active)
+            verify_hardening_evidence(root, p, data, active, ref)
         elif data.get('implementation_fingerprint') != p.working_fingerprint(root) or data.get('implementation_tree') != p.git_implementation_tree_hash(root):
             raise SystemExit('Evidence is stale for current implementation: ' + ref)
         active = p.read_json(root / p.ACTIVE_FILE, default=None)
@@ -1333,10 +1333,7 @@ def hardening_evidence(root, p, data, active):
         raise SystemExit('Acceptance evidence requires L1..L5')
     if action == 'audit':
         source = p.read_json(safe_path(root, p.require_text(data, 'summary')))
-        runtime_path = safe_path(root, source['runtime_record'])
-        if p.file_hash(runtime_path) != source['runtime_sha256']:
-            raise SystemExit('Frozen runtime record changed')
-        runtime = p.read_json(runtime_path)
+        runtime = bound_runtime_evidence(root, p, source, data['summary'])
         if digest(data['acceptance_contract']) != runtime['identity']['acceptance_contract_hash'] or (data.get('run_id') and data['run_id'] != runtime['identity']['evidence_run_id']):
             emit({'status':'blocked','failure_class':'CONTRACT_INCOMPATIBLE','reason':'Audit only verifies the original contract/run; a new contract requires a new evidence run','candidate_runtime_status':runtime['candidate_runtime_status']})
             return 1
@@ -1344,10 +1341,31 @@ def hardening_evidence(root, p, data, active):
             audit = {'status':'fail', 'failure_class':'AUDITOR_FAILURE', 'reason':p.require_text(data,'auditor_error'), 'coverage':[]}
         else:
             audit = guarded_runtime_audit(root, p, runtime)
-        ref = source['identity']['evidence_directory'] + '/audit-' + uuid.uuid4().hex + '.json'
+        origin_ref = source.get('origin_summary', data['summary'])
+        origin_path = safe_path(root, origin_ref)
+        origin = p.read_json(origin_path)
+        identity = runtime['identity']
+        uid = uuid.uuid4().hex
+        ref = identity['evidence_directory'] + '/audit-' + uid + '.json'
+        summary_ref = identity['evidence_directory'] + '/summary-audit-' + uid + '.json'
+        binding = {'runtime_record':source['runtime_record'], 'runtime_sha256':source['runtime_sha256'],
+                   'identity':identity, 'origin_summary':origin_ref, 'origin_summary_sha256':p.file_hash(origin_path)}
+        record = {**audit, **binding}
         with (root/ref).open('xb') as f:
-            f.write(encoded({**audit, 'runtime_record':source['runtime_record'], 'runtime_sha256':source['runtime_sha256']}))
-        emit({**audit, 'candidate_runtime_status':runtime['candidate_runtime_status'], 'acceptance_contract_hash':runtime['identity']['acceptance_contract_hash'], 'evidence_run_id':runtime['identity']['evidence_run_id'], 'audit':ref})
+            f.write(encoded(record))
+        base = {key:value for key,value in origin.items() if key != 'reason'}
+        summary = {**base, **audit, **binding, 'audit_record':ref, 'audit_sha256':p.file_hash(root/ref)}
+        with (root/summary_ref).open('xb') as f:
+            f.write(encoded(summary))
+        # Never replace newer-run evidence or rewrite the original failed summary.
+        state = p.load_project_state(root)
+        previous = state.get('test_summaries', {}).get(summary['purpose'])
+        if audit['status'] == 'pass' and previous and Path(previous).parent == Path(origin_ref).parent:
+            state['test_summaries'][summary['purpose']] = summary_ref
+            p.save_project_state(root, state)
+        emit({**audit, 'candidate_runtime_status':runtime['candidate_runtime_status'],
+              'acceptance_contract_hash':identity['acceptance_contract_hash'],
+              'evidence_run_id':identity['evidence_run_id'], 'audit':ref, 'summary':summary_ref})
         return 0 if audit['status'] == 'pass' else 1
     if action not in {'preflight', 'run'}:
         raise SystemExit('Acceptance protocol supports preflight/run/audit; legacy import is not runtime proof')
@@ -1415,34 +1433,32 @@ def hardening_evidence(root, p, data, active):
     except (SystemExit,OSError,ValueError) as exc:
         failure = 'HARNESS_FAILURE'
         with (dest/('identity-error-' + uuid.uuid4().hex + '.log')).open('xb') as f: f.write(str(exc).encode('utf-8'))
-    runtime_status = report.get('candidate_runtime_status', 'NOT_RUN') if report else 'NOT_RUN'
-    if not failure:
-        if code != 0 or report is None:
-            failure = 'HARNESS_FAILURE'
-        elif report.get('failure_class'):
-            failure = report['failure_class'] if report['failure_class'] in FAILURE_CLASSES else 'EVIDENCE_INSUFFICIENT'
-        elif runtime_status == 'FAIL':
-            failure = 'CANDIDATE_FAILURE'
-    raw = []
-    try:
-        names = {'stdout.log','stderr.log','contract.json'}
-        if report:
-            names.add('runtime-result.json')
-            for row in report.get('coverage', []) if isinstance(report.get('coverage'), list) else []:
-                if isinstance(row, dict):
-                    names.update(strings(row.get('actual_evidence', []), 'actual_evidence'))
-        for name in sorted(names):
-            target_rel = (rel / name).as_posix()
-            item = hard_file(root, target_rel)
-            if not (root / target_rel).resolve().is_relative_to(dest.resolve()):
-                raise SystemExit('Raw evidence escaped its run directory')
-            raw.append({'path':target_rel,'sha256':item['sha256'],'bytes':(root/target_rel).stat().st_size})
-    except (SystemExit, OSError, ValueError) as exc:
-        failure = 'EVIDENCE_INSUFFICIENT'
-        with (dest/('collection-error-' + uuid.uuid4().hex + '.log')).open('xb') as f: f.write(str(exc).encode('utf-8'))
+    # Freeze this run's regular files, including output left before report failure.
+    # Never follow links or inspect another project's/output tree.
+    raw, collection_errors = [], []
+    for directory, dirs, files in os.walk(dest, followlinks=False, onerror=lambda exc: collection_errors.append(str(exc))):
+        for name in list(dirs):
+            path = Path(directory)/name
+            if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
+                dirs.remove(name)
+                collection_errors.append('Linked evidence directory: ' + str(path.relative_to(dest)))
+        for name in sorted(files):
+            path = Path(directory)/name
+            target_rel = path.relative_to(root).as_posix()
+            try:
+                item = hard_file(root, target_rel)
+                if not path.resolve().is_relative_to(dest.resolve()):
+                    raise SystemExit('Raw evidence escaped its run directory')
+                raw.append({'path':target_rel,'sha256':item['sha256'],'bytes':path.stat().st_size})
+            except (SystemExit, OSError, ValueError) as exc:
+                collection_errors.append(str(exc))
+    if collection_errors:
+        failure = failure or 'HARNESS_FAILURE'
+    runtime_status, failure = captured_outcome(report, code, started, failure, raw, identity['evidence_directory'])
     runtime = {'schema':'acceptance/1', 'identity':identity, 'contract':c, 'raw':raw,
                'candidate_runtime_status':runtime_status,'failure_class':failure, 'report':report,
                'process_started':started,'exit_code':code,'argv':c['harness']['argv'], 'created_at':p.now_iso(),
+               'collection_errors':collection_errors,
                'audit_metadata':{'root_directory_mtime_ns':root.stat().st_mtime_ns}}
     with (dest/'runtime.json').open('xb') as f:
         f.write(encoded(runtime))
@@ -1469,11 +1485,8 @@ def hardening_evidence(root, p, data, active):
     return 0 if audit['status'] == 'pass' else 1
 
 
-def verify_hardening_evidence(root, p, data, active):
-    path = safe_path(root, data['runtime_record'])
-    if p.file_hash(path) != data['runtime_sha256']:
-        raise SystemExit('Frozen runtime evidence changed')
-    runtime = p.read_json(path)
+def verify_hardening_evidence(root, p, data, active, ref):
+    runtime = bound_runtime_evidence(root, p, data, ref)
     audit = guarded_runtime_audit(root,p,runtime)
     if audit['status'] != 'pass' or runtime.get('failure_class'):
         raise SystemExit('Acceptance evidence is stale/insufficient: ' + audit.get('reason','runtime failure'))
@@ -1490,3 +1503,97 @@ def guarded_runtime_audit(root, p, runtime):
         return read_runtime_audit(root, p, runtime)
     except Exception as exc:
         return {'status':'fail','failure_class':'AUDITOR_FAILURE','reason':type(exc).__name__ + ': ' + str(exc),'coverage':[]}
+
+
+
+def bound_runtime_evidence(root, p, data, ref):
+    """Validate existing summary fields plus append-only re-audit bindings."""
+    try:
+        path = safe_path(root, data['runtime_record'])
+        if p.file_hash(path) != data['runtime_sha256']:
+            raise SystemExit('Frozen runtime record changed')
+        runtime = p.read_json(path)
+        identity = runtime['identity']
+        directory = identity['evidence_directory']
+        if data['runtime_record'] != directory + '/runtime.json' or Path(ref).parent.as_posix() != directory:
+            raise SystemExit('Evidence binding points outside its original run')
+        if data['identity'] != identity or data['raw'] != runtime['raw']:
+            raise SystemExit('Evidence identity/raw binding mismatch')
+        for key in ['candidate_revision','candidate_source_hash','acceptance_contract_revision',
+                    'acceptance_contract_hash','harness_revision','harness_source_hash','evidence_run_id']:
+            if data[key] != identity[key]:
+                raise SystemExit('Evidence identity binding mismatch: ' + key)
+        if data['candidate_runtime_status'] != runtime['candidate_runtime_status']:
+            raise SystemExit('Evidence runtime status binding mismatch')
+        if Path(ref).name != 'summary.json':
+            origin_ref = data['origin_summary']
+            if origin_ref != directory + '/summary.json':
+                raise SystemExit('Reaudit must bind original summary, not an audit chain')
+            origin_path = safe_path(root, origin_ref)
+            if p.file_hash(origin_path) != data['origin_summary_sha256']:
+                raise SystemExit('Original summary changed')
+            origin = p.read_json(origin_path)
+            bound_runtime_evidence(root, p, origin, origin_ref)
+            for key in ['level','batch_id','context_fingerprint','formal_fact_hashes','stage_id','purpose',
+                        'runtime_record','runtime_sha256','raw','identity']:
+                if data[key] != origin[key]:
+                    raise SystemExit('Reaudit cannot change original evidence context: ' + key)
+            audit_ref = data['audit_record']
+            if Path(audit_ref).parent.as_posix() != directory or not Path(audit_ref).name.startswith('audit-'):
+                raise SystemExit('Invalid audit binding')
+            audit_path = safe_path(root, audit_ref)
+            if p.file_hash(audit_path) != data['audit_sha256']:
+                raise SystemExit('Audit record changed')
+            audit = p.read_json(audit_path)
+            for key in ['identity','origin_summary','origin_summary_sha256','runtime_record','runtime_sha256',
+                        'status','failure_class','coverage']:
+                if audit[key] != data[key]:
+                    raise SystemExit('Audit result/binding mismatch: ' + key)
+        elif any(key in data for key in ['origin_summary','audit_record','audit_sha256']):
+            raise SystemExit('Original summary cannot be replaced by a derived audit')
+        return runtime
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise SystemExit('Missing/invalid evidence binding: ' + str(exc)) from None
+
+
+def captured_outcome(report, code, started, observed_failure, raw, directory):
+    """0 completes reporting, including legacy candidate FAIL. 1 is candidate
+    failure only with explicit completed harness + FAIL; >=2/signals are facility
+    failures. Observed collector/identity/timeout failures override declarations.
+    """
+    status = 'UNKNOWN' if started else 'NOT_RUN'
+    if not isinstance(report, dict):
+        return status, observed_failure or 'HARNESS_FAILURE'
+    status = report['candidate_runtime_status']
+    rows = report.get('coverage')
+    valid_rows = isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
+    claimed = report.get('failure_class')
+    valid_claim = claimed is None or (isinstance(claimed, str) and claimed in FAILURE_CLASSES)
+    conflict = (not valid_rows or not valid_claim
+                or (claimed == 'CANDIDATE_FAILURE' and status != 'FAIL'))
+    if status == 'FAIL' and (not valid_rows or not any(row.get('status') == 'fail' for row in rows)):
+        conflict = True
+    if code == 1 and not (status == 'FAIL' and report.get('harness_status') == 'completed'
+                          and claimed in (None, 'CANDIDATE_FAILURE')):
+        conflict = True
+    if status == 'NOT_RUN' and started:
+        refs = report.get('not_run_evidence', [])
+        raw_paths = {item['path'] for item in raw if item['bytes'] > 0}
+        reliable = (report.get('harness_status') == 'failed' and isinstance(refs, list) and refs
+                    and all(isinstance(ref, str) and directory + '/' + ref in raw_paths
+                            and Path(ref).name not in {'contract.json','runtime-result.json'} for ref in refs))
+        if not reliable:
+            status = 'UNKNOWN'
+    if conflict:
+        return 'UNKNOWN' if started else 'NOT_RUN', observed_failure or 'HARNESS_FAILURE'
+    if observed_failure:
+        return status, observed_failure
+    if code not in {0, 1} or report.get('harness_status') == 'failed':
+        return status, 'HARNESS_FAILURE'
+    if claimed:
+        return status, claimed
+    if status == 'FAIL':
+        return status, 'CANDIDATE_FAILURE'
+    if status in {'UNKNOWN', 'NOT_RUN'}:
+        return status, 'EVIDENCE_INSUFFICIENT'
+    return status, None

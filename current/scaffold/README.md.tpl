@@ -85,9 +85,11 @@ Harness 通过环境变量 AI_ACCEPTANCE_CONTRACT 读取冻结合同副本，AI_
 
 这只是结构例子，不是证据。必须真正运行入口，并保存 candidate.log 等原始输出；不可用 bool、literal object 或 model-only assertion 冒充 runtime。工具验证实际捕获进程、类型精确匹配、入口/参与者与原始非空文件引用。static/model PASS 不能满足 runtime-required；summary/合同本身不能代替执行日志。Harness 必须如实报告，工具不能证明其内部语义或阻止有文件权限者伪造内容。manual 类型还需合同中的 manual_acceptance={actor_role:"project_owner",approved:true} 及真实原始反馈；仍不能代替原批次/阶段人工验收流程。
 
-工具分别冻结 candidate_revision/source_hash、acceptance_contract_revision/hash、harness_revision/source_hash、evidence_run_id；保存 contract.json、stdout/stderr、runtime-result.json、runtime.json、summary.json。运行原件与审核结果分开；action=audit、summary=原摘要路径只重读原运行，新增 audit-*.json，不改写原结果。外部审核工具自身崩溃可用 auditor_error 记录实际错误，分类 AUDITOR_FAILURE，不改运行 PASS/FAIL。不得把旧 PASS 搬到新合同；新合同必须新 run。
+工具分别冻结 candidate_revision/source_hash、acceptance_contract_revision/hash、harness_revision/source_hash、evidence_run_id；保存 contract.json、stdout/stderr、runtime-result.json、runtime.json、summary.json。运行原件与审核结果分开；action=audit、summary=原摘要路径只重读原运行，追加 audit-*.json 和可由正常 ai-finish evidence_refs 消费的 summary-audit-*.json，不再次启动 Harness。新摘要绑定原 candidate/harness/contract/run、runtime/raw 哈希、原失败摘要和新审计文件，保留原批次、测试级别及上下文；原摘要、运行和历史审计逐字节保留。缺失绑定、原件篡改或审计失败均不能完成验收。外部审核工具自身崩溃可用 auditor_error 记录实际错误，分类 AUDITOR_FAILURE，不改运行 PASS/FAIL。不得把旧 PASS 搬到新合同；新合同必须新 run。
 
-失败分类：CANDIDATE_FAILURE、HARNESS_FAILURE、AUDITOR_FAILURE、ENVIRONMENT_BLOCKED、CONTRACT_INCOMPATIBLE、EVIDENCE_INSUFFICIENT。未获得候选执行报告时 NOT_RUN 表示没有证实候选执行，不能声称原症状已验证；无法确定实际启动状况时 Harness 报 UNKNOWN。扫描器缺依赖属于 Harness；审计崩溃不得覆盖已有 runtime 结果。所有失败/阻塞原件保留，成功只返回简短摘要和路径，原日志按需读。
+失败分类：CANDIDATE_FAILURE、HARNESS_FAILURE、AUDITOR_FAILURE、ENVIRONMENT_BLOCKED、CONTRACT_INCOMPATIBLE、EVIDENCE_INSUFFICIENT。NOT_RUN 表示有可靠依据确认候选未启动（例如 preflight 拒绝或 Harness 启动前失败）；Harness 已启动但报告缺失、损坏或与退出状态冲突时记 UNKNOWN，不能把未证实运行写成确定未运行。扫描器缺依赖属于 Harness；审计崩溃不得覆盖已有 runtime 结果。所有失败/阻塞原件保留，成功只返回简短摘要和路径，原日志按需读。
+
+Harness 退出/报告约定：退出 0 表示报告正常完成，候选仍可明确报告 FAIL；退出 1 仅在报告为 FAIL、coverage 有失败项、harness_status="completed" 且无设施错误时表示 CANDIDATE_FAILURE。退出码至少为 2 或信号退出、harness_status="failed"、实际采集错误均属于 HARNESS_FAILURE，不能由候选失败声明覆盖。缺失/损坏/冲突报告保留原文、真实退出码和已有原始文件，候选状态 UNKNOWN；有效候选 FAIL 与设施错误分开记录。报告声明 NOT_RUN 时，若 Harness 已启动，须 harness_status="failed" 并用 not_run_evidence 引用本次目录内非空的启动前失败日志；合同或报告自身不能充当该依据。这里信任经审查 Harness 的如实报告，不提供系统级启动监控或语义证明。历史 NOT_RUN 记录不回写，也不能据新约定推断旧记录已经证明未启动。
 
 ## 调查止损与范围决定（仅调查/范围变化时读取）
 

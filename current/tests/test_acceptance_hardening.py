@@ -96,7 +96,8 @@ class AcceptanceHardeningTests(unittest.TestCase):
         h,c=self.fixture(harness="raise ImportError('fixture scanner unavailable')\n")
         a=self.evidence(h,c,expect=1)
         self.assertEqual(a['failure_class'],'HARNESS_FAILURE')
-        self.assertEqual(a['candidate_runtime_status'],'NOT_RUN')
+        # A started harness without a final report cannot prove candidate absence.
+        self.assertEqual(a['candidate_runtime_status'],'UNKNOWN')
 
     def test_t8_auditor_failure_cannot_change_runtime(self):
         h,c=self.fixture(); a=self.evidence(h,c)
@@ -181,7 +182,8 @@ class AcceptanceHardeningTests(unittest.TestCase):
         for text in ["{'G1':True}","[dict(c['coverage'][0],evidence_kind='runtime',status='pass',actual_evidence=[])]"]:
             body=HARNESS[:HARNESS.index('p=subprocess.run')]+f"(r/'runtime-result.json').write_text(json.dumps({{'candidate_runtime_status':'PASS','coverage':{text}}}),encoding='utf-8')\n"
             h,c=self.fixture(harness=body)
-            self.assertEqual(self.evidence(h,c,expect=1)['failure_class'],'EVIDENCE_INSUFFICIENT')
+            expected='HARNESS_FAILURE' if text == "{'G1':True}" else 'EVIDENCE_INSUFFICIENT'
+            self.assertEqual(self.evidence(h,c,expect=1)['failure_class'],expected)
 
     def test_high_risk_investigation_requires_stop_loss(self):
         h,c=self.fixture()
@@ -334,3 +336,138 @@ class AcceptanceHardeningTests(unittest.TestCase):
         self.assertEqual(result['failure_class'],'CONTRACT_INCOMPATIBLE')
         self.assertEqual(original,(h.root/a['summary']).read_bytes())
         self.assertTrue(self.read(h,'.ai/project_state.json')['layered_test_contract'])
+
+
+    def review_start(self, h, c):
+        write_json(h.root/'contract.json', c)
+        write_json(h.root/'.ai/runtime/batch_request.json', {'batch_id':'P1-001','stage_id':'P1',
+          'title':'Regression batch','goal':'Audit recovery','scope':['candidate.py'],
+          'acceptance_criteria':['G1'],'acceptance_contract':'contract.json','required_test_level':'L3'})
+        h.tool('ai-start')
+
+    def review_broken_auditor(self, h, c, action='run', summary=None):
+        request={'actor_role':'integration_reviewer','action':action,'level':'L3','run_id':'run-1','acceptance_contract':c}
+        if summary: request['summary']=summary
+        write_json(h.root/'.ai/runtime/evidence_request.json',request)
+        script="import sys;sys.path.insert(0,'tools');import project;e,_=project.context_extension();e.read_runtime_audit=lambda *a:(_ for _ in ()).throw(TypeError('actual injected auditor defect'));sys.argv=['project.py','ai-evidence'];raise SystemExit(project.main())"
+        return json.loads(run([PYTHON,'-B','-c',script],h.root,expect=1).stdout)
+
+    def review_finish(self,h,ref,expect=1):
+        result=h.result_payload('pass',[{'name':'captured runtime','status':'pass','details':'Original captured runtime, appended audit'}])
+        result['evidence_refs']=[ref]
+        write_json(h.root/'.ai/runtime/batch_result.json',result)
+        return h.tool('ai-finish',expect=expect)
+
+    def test_review_initial_auditor_failure_reaudit_finishes_without_rerun(self):
+        for mode in ['lite','standard']:
+            counter="counter=pathlib.Path('harness-count.txt');counter.write_text(str(int(counter.read_text())+1) if counter.exists() else '1')\n"
+            h,c=self.fixture(mode,harness=HARNESS.replace('p=subprocess.run',counter+'p=subprocess.run'))
+            self.review_start(h,c)
+            first=self.review_broken_auditor(h,c)
+            self.assertEqual(first['failure_class'],'AUDITOR_FAILURE')
+            self.assertEqual(first['candidate_runtime_status'],'PASS')
+            self.review_finish(h,first['summary'])
+            failed_audit=self.review_broken_auditor(h,c,'audit',first['summary'])
+            run_dir=h.root/'docs/evidence/run-1'
+            originals={p:p.read_bytes() for p in run_dir.rglob('*') if p.is_file()}
+            originals.update({h.root/name:(h.root/name).read_bytes() for name in ['candidate.py','harness.py','contract.json']})
+            success=self.evidence(h,c,action='audit',summary=first['summary'])
+            self.assertIn('summary',success,'Reaudit must return consumable evidence, not only an audit note')
+            summary=self.read(h,success['summary'])
+            self.assertEqual(summary['status'],'pass')
+            self.assertEqual(summary['evidence_run_id'],'run-1')
+            self.assertEqual(summary['origin_summary'],first['summary'])
+            self.review_finish(h,success['summary'],expect={0,1})
+            self.assertFalse((h.root/'.ai/runtime/active_batch.json').exists())
+            self.assertEqual((h.root/'harness-count.txt').read_text(),'1')
+            for path,content in originals.items():self.assertEqual(path.read_bytes(),content,str(path))
+
+    def test_review_reaudit_binding_and_failed_audit_cannot_close(self):
+        h,c=self.fixture();self.review_start(h,c)
+        first=self.review_broken_auditor(h,c)
+        failed=self.review_broken_auditor(h,c,'audit',first['summary'])
+        self.assertIn('summary',failed)
+        self.review_finish(h,failed['summary'])
+        good=self.evidence(h,c,action='audit',summary=first['summary'])
+        payload=self.read(h,good['summary'])
+        for field in ['origin_summary_sha256','audit_sha256','runtime_sha256','identity','raw']:
+            forged=copy.deepcopy(payload);del forged[field]
+            ref='docs/evidence/run-1/summary-audit-forged.json';write_json(h.root/ref,forged)
+            self.review_finish(h,ref)
+            self.assertTrue((h.root/'.ai/runtime/active_batch.json').exists())
+        (h.root/payload['audit_record']).write_text('{}',encoding='utf-8')
+        self.review_finish(h,good['summary'])
+
+    def test_review_tampered_original_blocks_reaudit(self):
+        h,c=self.fixture();first=self.review_broken_auditor(h,c)
+        (h.root/'docs/evidence/run-1/candidate.log').write_text('tampered raw',encoding='utf-8')
+        bad=self.evidence(h,c,action='audit',summary=first['summary'],expect=1)
+        self.assertEqual(bad['failure_class'],'EVIDENCE_INSUFFICIENT')
+        self.assertEqual(self.read(h,first['summary'])['failure_class'],'AUDITOR_FAILURE')
+
+    def test_review_candidate_ran_before_report_crash_is_unknown_and_retained(self):
+        body=HARNESS[:HARNESS.index('rows=[]')]+"raise RuntimeError('harness crashed after observable candidate output')\n"
+        h,c=self.fixture(harness=body)
+        result=self.evidence(h,c,expect=1)
+        self.assertIn('actual candidate output',(h.root/'docs/evidence/run-1/candidate.log').read_text())
+        self.assertEqual(result['candidate_runtime_status'],'UNKNOWN')
+        self.assertEqual(result['failure_class'],'HARNESS_FAILURE')
+        raw=self.read(h,result['summary'])['raw']
+        self.assertIn('docs/evidence/run-1/candidate.log',{x['path'] for x in raw})
+        self.assertFalse(any(x['path'].endswith('runtime-result.json') for x in raw))
+
+    def test_review_explicit_candidate_failure_exit_one_is_not_harness_failure(self):
+        body=HARNESS.replace("'coverage':rows","'coverage':rows,'harness_status':'completed'")+"raise SystemExit(p.returncode)\n"
+        h,c=self.fixture(harness=body)
+        (h.root/'candidate.py').write_text("print('observable failed check');raise SystemExit(1)\n",encoding='utf-8')
+        c['candidate']['files'][0]['sha256']=hashlib.sha256((h.root/'candidate.py').read_bytes()).hexdigest()
+        result=self.evidence(h,c,expect=1)
+        self.assertEqual(result['candidate_runtime_status'],'FAIL')
+        self.assertEqual(result['failure_class'],'CANDIDATE_FAILURE')
+
+    def test_review_conflicting_exit_and_damaged_report_are_facility_failures(self):
+        bodies=[HARNESS+"raise SystemExit(1)\n",
+                HARNESS[:HARNESS.index('rows=[]')]+"(r/'runtime-result.json').write_text('{broken',encoding='utf-8')\n",
+                HARNESS+"(r/'runtime-result.json').write_text('{broken',encoding='utf-8');raise SystemExit(2)\n"]
+        for body in bodies:
+            h,c=self.fixture(harness=body);result=self.evidence(h,c,expect=1)
+            self.assertEqual(result['failure_class'],'HARNESS_FAILURE')
+            self.assertEqual(result['candidate_runtime_status'],'UNKNOWN')
+            raw={x['path'] for x in self.read(h,result['summary'])['raw']}
+            self.assertIn('docs/evidence/run-1/candidate.log',raw)
+            self.assertIn('docs/evidence/run-1/runtime-result.json',raw)
+
+    def test_review_facility_error_cannot_be_overridden_by_candidate_declaration(self):
+        body=HARNESS.replace("'coverage':rows","'coverage':rows,'failure_class':'CANDIDATE_FAILURE'")+"raise SystemExit(2)\n"
+        h,c=self.fixture(harness=body);result=self.evidence(h,c,expect=1)
+        self.assertEqual(result['failure_class'],'HARNESS_FAILURE')
+        stored=self.read(h,'docs/evidence/run-1/runtime.json')
+        self.assertEqual(stored['report']['failure_class'],'CANDIDATE_FAILURE')
+        self.assertEqual(stored['exit_code'],2)
+
+    def test_review_not_run_needs_pre_spawn_or_recorded_setup_evidence(self):
+        body=HARNESS[:HARNESS.index('p=subprocess.run')]+"(r/'setup.log').write_text('dependency preparation failed; candidate was not started',encoding='utf-8')\n(r/'runtime-result.json').write_text(json.dumps({'candidate_runtime_status':'NOT_RUN','harness_status':'failed','not_run_evidence':['setup.log'],'coverage':[]}),encoding='utf-8')\nraise SystemExit(2)\n"
+        h,c=self.fixture(harness=body);result=self.evidence(h,c,expect=1)
+        self.assertEqual(result['candidate_runtime_status'],'NOT_RUN')
+        raw={x['path'] for x in self.read(h,result['summary'])['raw']}
+        self.assertIn('docs/evidence/run-1/setup.log',raw)
+        h,c=self.fixture(harness=body.replace("'not_run_evidence':['setup.log'],",''))
+        self.assertEqual(self.evidence(h,c,expect=1)['candidate_runtime_status'],'UNKNOWN')
+
+
+    def test_review_runtime_and_origin_summary_tampering_rejected(self):
+        for name in ['runtime.json','summary.json']:
+            h,c=self.fixture();self.review_start(h,c)
+            first=self.review_broken_auditor(h,c)
+            good=self.evidence(h,c,action='audit',summary=first['summary'])
+            path=h.root/'docs/evidence/run-1'/name
+            path.write_bytes(path.read_bytes()+b'\n')
+            self.review_finish(h,good['summary'])
+            self.assertTrue((h.root/'.ai/runtime/active_batch.json').exists())
+
+    def test_review_malformed_failure_class_is_preserved_as_facility_failure(self):
+        body=HARNESS.replace("'coverage':rows","'coverage':rows,'failure_class':[]")
+        h,c=self.fixture(harness=body);result=self.evidence(h,c,expect=1)
+        self.assertEqual(result['candidate_runtime_status'],'UNKNOWN')
+        self.assertEqual(result['failure_class'],'HARNESS_FAILURE')
+        self.assertEqual(self.read(h,'docs/evidence/run-1/runtime.json')['report']['failure_class'],[])
