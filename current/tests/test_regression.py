@@ -1645,7 +1645,7 @@ class V181RegressionTests(unittest.TestCase):
                 "--output-dir",
                 str(temp),
             ])
-            package_name = "AI_Solo_Developer_Project_Starter_V1.9.0"
+            package_name = "AI_Solo_Developer_Project_Starter_V" + (ROOT / "VERSION").read_text(encoding="utf-8").strip()
             archive = temp / f"{package_name}.zip"
             checksum_path = temp / f"{package_name}_SHA256.txt"
             self.assertTrue(archive.exists())
@@ -1773,7 +1773,7 @@ class V181RegressionTests(unittest.TestCase):
                 remove_tree(temp)
 
     def test_version_labels_and_hook_are_v181(self) -> None:
-        self.assertEqual((ROOT / "VERSION").read_text(encoding="utf-8").strip(), "1.9.0")
+        self.assertEqual((ROOT / "VERSION").read_text(encoding="utf-8").strip(), "1.9.1")
         hook = (ROOT / "scaffold/.githooks/pre-commit").read_text(encoding="utf-8")
         self.assertIn("V1.9.0 强制文档写回提交前检查", hook)
         self.assertIn("无法执行 V1.9.0 文档写回检查", hook)

@@ -243,6 +243,16 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
         if actor != 'project_manager_agent' or not reason.strip():
             raise SystemExit('Accepting changed context requires PM role and a reread/review reason.')
         if active:
+            if active.get('acceptance_contract'):
+                c = p.read_json(safe_path(root,active['acceptance_contract']))
+                checked = contract_preflight(root,p,{'acceptance_contract':c,'run_id':'review-' + uuid.uuid4().hex})
+                if checked['compatibility'] != 'compatible_without_candidate_change':
+                    raise SystemExit('CONTRACT_INCOMPATIBLE')
+                declared = set(active.get('acceptance_criteria', [])) | set(active.get('required_checks', []))
+                if not declared.issubset({row['criterion_id'] for row in c['coverage']}):
+                    raise SystemExit('Contract review cannot remove batch coverage')
+                archive(root,p,'contracts',active['batch_id'],{'previous_hash':active['acceptance_contract_hash'],'new_hash':checked['acceptance_contract_hash'],'reason':reason})
+                active['acceptance_contract_hash'] = checked['acceptance_contract_hash']
             active['context_fingerprint'] = reference_fingerprint(index, active.get('context_refs', {}))
             active['context_review'] = {'at': p.now_iso(), 'reason': reason, 'actor_role': actor}
             p.write_json(root / p.ACTIVE_FILE, active)
@@ -287,6 +297,12 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
                 'policy_hashes': index['policy_hashes'],
                 'metrics': {'unit': 'utf8_bytes_and_characters_not_tokens', 'cold_history_loaded': False,
                             'selected_requirements': len(refs['requirements']), 'selected_architecture': len(refs['architecture']), 'selected_decisions': len(refs['decisions'])}}
+    inv_summary = investigation_summary(investigation_state(root, p))
+    if inv_summary:
+        manifest['investigation'] = inv_summary
+        if inv_summary['owner_decision_required']:
+            manifest['next_step'] = inv_summary['next_step']
+            next_step = inv_summary['next_step']
     red_lines = [line for row in selected['architecture'] for line in row['red_lines']]
     cfg = p.load_config(root)
     forbidden = [key for key, allowed in cfg.get('authorization', {}).items() if allowed is False]
@@ -324,6 +340,10 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
 
 
 def ensure_fresh(root, p, active):
+    if active.get('acceptance_contract'):
+        c = p.read_json(safe_path(root,active['acceptance_contract']))
+        if digest(c) != active.get('acceptance_contract_hash'):
+            raise SystemExit('Acceptance contract changed; PM must review via context refresh')
     for path in active.get('task_contract', {}).get('reference_paths', []):
         safe_path(root, path)
     for path, expected in active.get('debug_checkpoint', {}).get('evidence_hashes', {}).items():
@@ -446,6 +466,10 @@ def scoped_finish_guard(root, p, active, result):
             p.require_text(row, 'details')
             ref = p.require_text(row, 'evidence')
             verify_evidence(root, p, [ref], active.get('required_test_level', 'L1'), active['batch_id'])
+            if active.get('acceptance_contract_hash'):
+                summary = p.read_json(safe_path(root,ref))
+                if name not in {item['criterion_id'] for item in summary.get('coverage',[])}:
+                    raise SystemExit('Typed evidence does not cover scoped check: ' + name)
         else:
             p.require_text(row, 'reason')
             if passing:
@@ -458,7 +482,26 @@ def scoped_finish_guard(root, p, active, result):
 
 
 def batch_fields(root, p, data):
+    if data.get('scope_expansion'):
+        scope = strings(data['scope_expansion'], 'scope_expansion')
+        inv = investigation_state(root,p)
+        if not inv or inv.get('approved_scope_expansion') != scope:
+            inv = inv or {'investigation_id':'scope','iterations':0,'failed_gates':0,'candidate_hashes':[]}
+            inv.update(status='blocked',owner_decision_required=True,scope_expansion=scope,reason_code='OWNER_SCOPE_DECISION_REQUIRED')
+            save_investigation(root,p,inv,{'scope_expansion':scope})
+            raise SystemExit('OWNER_SCOPE_DECISION_REQUIRED')
     task = task_fields(root, p, data)
+    if data.get('acceptance_contract'):
+        c = p.read_json(safe_path(root, data['acceptance_contract']))
+        identity = contract_preflight(root,p,{'acceptance_contract':c,'run_id':'preflight-' + uuid.uuid4().hex})
+        if identity['compatibility'] != 'compatible_without_candidate_change':
+            raise SystemExit('CONTRACT_INCOMPATIBLE: ' + identity['compatibility'])
+        declared = set(data.get('acceptance_criteria', [])) | set(data.get('required_checks', []))
+        extra_check = {'fix':'original_symptom','feature':'entry_wiring'}.get(data.get('task_contract',{}).get('work_type'))
+        if extra_check: declared.add(extra_check)
+        if not declared.issubset({row['criterion_id'] for row in c['coverage']}):
+            raise SystemExit('Coverage map must include every batch criterion and required check')
+        task.update(acceptance_contract=data['acceptance_contract'],acceptance_contract_hash=identity['acceptance_contract_hash'])
     index = build_index(root, p)
     refs = validate_refs(index, data.get('context_refs', {}))
     level = str(data.get('required_test_level', 'L1'))
@@ -525,7 +568,10 @@ def verify_evidence(root, p, refs, minimum, batch_id=None):
                 raise SystemExit('Raw evidence changed: ' + raw['path'])
         if not data.get('raw'):
             raise SystemExit('Evidence summary has no raw evidence')
-        if data.get('implementation_fingerprint') != p.working_fingerprint(root) or data.get('implementation_tree') != p.git_implementation_tree_hash(root):
+        active = p.read_json(root / p.ACTIVE_FILE, default=None)
+        if data.get('schema') == 'acceptance/1':
+            verify_hardening_evidence(root, p, data, active)
+        elif data.get('implementation_fingerprint') != p.working_fingerprint(root) or data.get('implementation_tree') != p.git_implementation_tree_hash(root):
             raise SystemExit('Evidence is stale for current implementation: ' + ref)
         active = p.read_json(root / p.ACTIVE_FILE, default=None)
         if active and data.get('context_fingerprint') != active.get('context_fingerprint'):
@@ -551,6 +597,15 @@ def finish_guard(root, p, result):
     active = p.read_json(root / p.ACTIVE_FILE)
     ensure_fresh(root, p, active)
     scoped_finish_guard(root, p, active, result)
+    if str(result.get('status', '')).lower() == 'pass':
+        investigation_guard(root, p)
+        if active.get('acceptance_contract_hash'):
+            if not result.get('evidence_refs'):
+                raise SystemExit('Batch requires typed acceptance evidence')
+            for ref in result['evidence_refs']:
+                record = p.read_json(safe_path(root, ref))
+                if record.get('acceptance_contract_hash') != active['acceptance_contract_hash']:
+                    raise SystemExit('Batch requires evidence for its declared acceptance contract')
     if str(result.get('status', '')).lower() != 'pass':
         return
     units = active.get('work_units', [])
@@ -589,6 +644,7 @@ def unit_command(args, p):
     if status not in {'pass', 'fail', 'blocked'} or not tests:
         raise SystemExit('Unit needs pass/fail/blocked status and actual test records')
     if status == 'pass':
+        investigation_guard(root, p)
         if any(x['status'] != 'pass' for x in tests):
             raise SystemExit('Unit pass requires all local tests pass')
         verify_evidence(root, p, data.get('evidence_refs', []), unit['required_test_level'], active['batch_id'])
@@ -623,6 +679,11 @@ def evidence_command(args, p):
     active = p.read_json(root / p.ACTIVE_FILE, default={})
     if active:
         ensure_fresh(root, p, active)
+    if 'acceptance_contract' in data:
+        return hardening_evidence(root, p, data, active)
+    if data.get('action', 'import') == 'run':
+        investigation_guard(root, p)
+        investigation_attempt(root,p,digest(p.working_fingerprint(root)),begin=True)
     level = p.require_text(data, 'level')
     if level not in {'L1', 'L2', 'L3', 'L4', 'L5'}:
         raise SystemExit('Evidence level must be L1..L5')
@@ -696,6 +757,8 @@ def evidence_command(args, p):
               'exit_code': exit_code, 'test_count': summary['test_count'], 'summary': (rel / 'summary.json').as_posix(), 'raw': raw_meta}
     if status != 'pass':
         result['failure_excerpt'] = output[-3000:]
+    if action == 'run':
+        investigation_attempt(root,p,digest(p.working_fingerprint(root)),failed=status != 'pass')
     emit(result)
     return 0 if status == 'pass' else 1
 
@@ -828,7 +891,11 @@ def run(args, p):
     root = p.find_root()
     command = args.command
     if command == 'ai-context':
+        if args.action == 'investigation':
+            return investigation_command(args, p)
         return context_command(args, p)
+    if command == 'ai-start':
+        investigation_guard(root, p, implementation=True)
     if command == 'ai-unit':
         return unit_command(args, p)
     if command == 'ai-evidence':
@@ -906,7 +973,7 @@ def run(args, p):
 
 def add_parsers(sub):
     parser = sub.add_parser('ai-context', help='Select context and validate freshness without loading history')
-    parser.add_argument('action', choices=['manifest', 'refresh', 'check', 'index', 'read', 'history', 'cold'])
+    parser.add_argument('action', choices=['manifest', 'refresh', 'check', 'index', 'read', 'history', 'cold', 'investigation'])
     parser.add_argument('--kind', default='')
     parser.add_argument('--id', default='')
     parser.add_argument('--task', default='')
@@ -919,3 +986,507 @@ def add_parsers(sub):
     for name in ['ai-unit', 'ai-evidence']:
         parser = sub.add_parser(name)
         parser.add_argument('--input')
+
+
+# acceptance/1 is opt-in: legacy evidence retains its original contract.
+EVIDENCE_KINDS = {'static', 'model', 'runtime', 'integration', 'manual', 'simulation', 'browser', 'external-system'}
+INVESTIGATION = Path('.ai/runtime/investigation.json')
+STOP_LIMITS = {'max_iterations': 'iterations', 'owner_review_after': 'iterations',
+               'max_candidate_revisions': 'candidate_revisions', 'max_failed_gates': 'failed_gates'}
+FAILURE_CLASSES = {'CANDIDATE_FAILURE', 'HARNESS_FAILURE', 'AUDITOR_FAILURE',
+                   'ENVIRONMENT_BLOCKED', 'CONTRACT_INCOMPATIBLE', 'EVIDENCE_INSUFFICIENT'}
+
+
+def hard_file(root, raw):
+    """Regular project file identity, rejecting links/reparse points on ancestors."""
+    path = safe_path(root, raw)
+    relative = Path(raw.replace('\\', '/'))
+    if '..' in relative.parts:
+        raise SystemExit('Identity path traversal forbidden')
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        info = cursor.lstat()
+        if cursor.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise SystemExit('Identity symlink/junction/reparse point forbidden: ' + raw)
+    if not path.is_file():
+        raise SystemExit('Identity requires a regular file: ' + raw)
+    return {'path': relative.as_posix(), 'canonical_path': str(path.resolve()),
+            'file_type': 'regular', 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'reparse': False}
+
+
+def identity_manifest(root, obj):
+    if not isinstance(obj, dict) or not str(obj.get('revision', '')).strip():
+        raise SystemExit('Identity requires revision and files')
+    rows = obj.get('files')
+    if not isinstance(rows, list) or not rows:
+        raise SystemExit('Identity files must be a nonempty approved manifest')
+    result, seen = [], set()
+    for item in rows:
+        if not isinstance(item, dict):
+            raise SystemExit('Identity manifest entry must be an object')
+        record = hard_file(root, str(item.get('path', '')))
+        if record['canonical_path'] in seen or record['sha256'] != item.get('sha256'):
+            raise SystemExit('Identity hash mismatch or duplicate: ' + record['path'])
+        seen.add(record['canonical_path']); result.append(record)
+    if obj.get('entrypoint') not in {x['path'] for x in result}:
+        raise SystemExit('Identity entrypoint must belong to approved manifest')
+    return sorted(result, key=lambda x: x['path'])
+
+
+def executable_identity(harness):
+    raw = harness.get('executable', '')
+    if not isinstance(raw, str) or not Path(raw).is_absolute():
+        raise SystemExit('Harness executable must be a canonical absolute file')
+    path = Path(raw)
+    for cursor in [path, *path.parents]:
+        info = cursor.lstat()
+        if cursor.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise SystemExit('Executable identity contains a link/reparse point')
+    if not path.is_file() or str(path.resolve()) != raw:
+        raise SystemExit('Executable canonical identity mismatch')
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != harness.get('executable_sha256'):
+        raise SystemExit('Executable identity hash mismatch')
+    return {'canonical_path': raw, 'sha256': actual, 'file_type': 'regular', 'reparse': False}
+
+
+def contract_preflight(root, p, data, *, reuse=False):
+    c = data.get('acceptance_contract')
+    if not isinstance(c, dict) or c.get('schema') != 'acceptance/1':
+        raise SystemExit('Contract schema must be acceptance/1')
+    for key in ['revision', 'approval_id', 'acceptance_rule_version']:
+        p.require_text(c, key)
+    auth = c.get('authorization', {})
+    if not isinstance(auth, dict) or auth.get('granted') is not True or not str(auth.get('note', '')).strip():
+        raise SystemExit('Contract execution requires existing authorization and its basis')
+    run_id = p.require_text(data, 'run_id')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}', run_id):
+        raise SystemExit('Invalid evidence run_id')
+    rel = 'docs/evidence/' + run_id
+    safe_path(root, rel, exists=False)
+    if not reuse and (root / rel).exists():
+        raise SystemExit('Evidence directory already exists; never reuse a run_id')
+    for ancestor in [root / 'docs', root / 'docs/evidence']:
+        if ancestor.exists() and (ancestor.is_symlink() or getattr(ancestor.lstat(), 'st_file_attributes', 0) & 0x400):
+            raise SystemExit('Evidence destination must not contain links/reparse points')
+    parent = root / 'docs/evidence' if (root / 'docs/evidence').exists() else root / 'docs'
+    if not os.access(parent, os.W_OK):
+        raise SystemExit('Evidence directory permissions unavailable')
+    candidate = identity_manifest(root, c.get('candidate'))
+    harness = identity_manifest(root, c.get('harness'))
+    if {x['path'] for x in candidate} & {x['path'] for x in harness}:
+        raise SystemExit('Candidate and Harness manifests must be separate')
+    executable = executable_identity(c['harness'])
+    argv = c['harness'].get('argv')
+    if not isinstance(argv, list) or any(not isinstance(x, str) for x in argv) or len(argv) < 2:
+        raise SystemExit('Harness argv must contain executable and approved entrypoint')
+    if argv[0] != executable['canonical_path'] or argv[1] != c['harness']['entrypoint']:
+        raise SystemExit('Spawn target must match verified executable and Harness entrypoint')
+    timeout = c.get('timeout_seconds')
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise SystemExit('Contract timeout_seconds must be 1..3600')
+    participants = strings(c.get('participants', []), 'participants')
+    if not participants:
+        raise SystemExit('Contract requires participants')
+    capabilities = strings(c['candidate'].get('capabilities', []), 'candidate capabilities')
+    required = strings(c.get('required_capabilities', []), 'required_capabilities')
+    compatibility = 'compatible_without_candidate_change'
+    if set(required) - set(capabilities):
+        compatibility = 'requires_candidate_change'
+    elif c['schema'] not in strings(c['harness'].get('supported_schema', []), 'supported_schema'):
+        compatibility = 'requires_harness_change'
+    if c.get('product_or_safety_semantics_changed') is True:
+        compatibility = 'requires_candidate_change'
+    if c.get('compatibility_decision') == 'incompatible':
+        compatibility = 'incompatible'
+    coverage = c.get('coverage')
+    if not isinstance(coverage, list) or not coverage:
+        raise SystemExit('Contract requires a structured coverage map')
+    ids = set()
+    for row in coverage:
+        if not isinstance(row, dict):
+            raise SystemExit('Coverage row must be an object, not a bool/model assertion')
+        cid = p.require_text(row, 'criterion_id'); p.require_text(row, 'requirement')
+        if cid in ids or row.get('required_evidence_kind') not in EVIDENCE_KINDS:
+            raise SystemExit('Duplicate criterion or invalid required_evidence_kind')
+        ids.add(cid)
+        entry = p.require_text(row, 'actual_entrypoint')
+        if entry not in {x['path'] for x in candidate + harness}:
+            raise SystemExit('Coverage entrypoint must exist in approved manifests')
+        actors = strings(row.get('actual_participants', []), 'coverage participants')
+        if not actors or set(actors) - set(participants):
+            raise SystemExit('Coverage participants must be declared in contract')
+        if row.get('planned_evidence_kind', row['required_evidence_kind']) != row['required_evidence_kind']:
+            raise SystemExit('Coverage kind mismatch; model/static cannot satisfy runtime')
+    volatile = c.get('volatile_identity', [])
+    if not isinstance(volatile, list):
+        raise SystemExit('volatile_identity must be an array')
+    for item in volatile:
+        if not isinstance(item, dict) or not str(item.get('reason', '')).strip() or item.get('field') != 'directory_mtime_ns':
+            raise SystemExit('Volatile hard gate needs explicit reason and supported field')
+        relative, target = p.resolve_project_artifact_path(root, item.get('path', ''))
+        cursor = root
+        for part in Path(relative).parts:
+            cursor = cursor / part
+            if cursor.is_symlink() or getattr(cursor.lstat(), 'st_file_attributes', 0) & 0x400:
+                raise SystemExit('Volatile identity path contains reparse/link')
+        if not target.is_dir() or target.stat().st_mtime_ns != item.get('expected'):
+            raise SystemExit('Explicit volatile identity gate mismatch')
+    return {'candidate_revision': c['candidate']['revision'], 'candidate_source_hash': digest(candidate),
+            'candidate_manifest': candidate, 'acceptance_contract_revision': c['revision'],
+            'acceptance_contract_hash': digest(c), 'harness_revision': c['harness']['revision'],
+            'harness_source_hash': digest(harness), 'harness_manifest': harness,
+            'executable_identity': executable, 'evidence_run_id': run_id,
+            'compatibility': compatibility, 'evidence_directory': rel}
+
+
+
+def investigation_state(root, p):
+    return p.read_json(root / INVESTIGATION, default=None)
+
+
+def investigation_guard(root, p, *, implementation=False):
+    inv = investigation_state(root, p)
+    if not inv or inv.get('status') == 'closed':
+        return
+    if inv.get('owner_decision_required'):
+        raise SystemExit(inv.get('reason_code', 'OWNER_DECISION_REQUIRED') + ': owner decision required before another revision/helper/tool/run')
+    if implementation and inv.get('kind') == 'investigation':
+        raise SystemExit('investigation must not start implementation; owner must close investigation first')
+
+
+def save_investigation(root, p, inv, event):
+    inv['updated_at'] = p.now_iso()
+    for boundary, counter in STOP_LIMITS.items():
+        value = len(inv.get('candidate_hashes', [])) if counter == 'candidate_revisions' else inv.get(counter, 0)
+        if boundary in inv and value >= inv[boundary]:
+            inv.update(status='blocked', owner_decision_required=True)
+            if inv.get('reason_code') != 'OWNER_SCOPE_DECISION_REQUIRED':
+                inv['reason_code'] = 'OWNER_DECISION_REQUIRED'
+    rel = Path('.ai/history/investigations') / (uuid.uuid4().hex + '.json')
+    p.atomic_file_transaction([(root / rel, encoded({'event': event, 'state': inv})), (root / INVESTIGATION, encoded(inv))])
+
+
+def investigation_attempt(root, p, identity, *, failed=False, begin=False):
+    inv = investigation_state(root, p)
+    if not inv or inv.get('status') == 'closed':
+        return
+    if begin:
+        inv['iterations'] = inv.get('iterations', 0) + 1
+        hashes = inv.setdefault('candidate_hashes', [])
+        if identity not in hashes:
+            hashes.append(identity)
+    if failed:
+        inv['failed_gates'] = inv.get('failed_gates', 0) + 1
+    save_investigation(root, p, inv, 'attempt_started' if begin else 'attempt_completed')
+
+
+def investigation_command(args, p):
+    root = p.find_root(); p.ensure_project_open(root, '调查止损')
+    data = p.read_json(root / (args.path or '.ai/runtime/investigation_request.json'))
+    action = data.get('action'); inv = investigation_state(root, p)
+    if action == 'owner-decision':
+        if not inv or data.get('actor_role') != 'project_owner' or data.get('owner_authorization') is not True:
+            raise SystemExit('Investigation continuation requires project_owner authorization')
+        p.require_text(data, 'reason')
+        hard_file(root, p.require_text(data, 'decision_evidence'))
+        if data.get('decision') not in {'close', 'continue'}:
+            raise SystemExit('Owner decision must close or continue')
+        for key in STOP_LIMITS:
+            if key in data:
+                if type(data[key]) is not int or data[key] <= 0:
+                    raise SystemExit('stop-loss boundary must be positive integer')
+                inv[key] = data[key]
+        inv.update(status='closed' if data['decision'] == 'close' else 'active', owner_decision_required=False)
+        inv['owner_decision'] = {k: data[k] for k in ['reason', 'decision', 'decision_evidence']}
+        if inv.get('scope_expansion') and data['decision'] == 'continue':
+            if data.get('approved_scope_expansion') != inv['scope_expansion']:
+                raise SystemExit('Owner must explicitly approve the exact scope expansion')
+            inv['approved_scope_expansion'] = inv['scope_expansion']
+        if inv['status'] == 'closed':
+            archive(root, p, 'investigations', inv.get('investigation_id', 'scope'), {'event': data, 'state': inv})
+            p.write_json(root / INVESTIGATION, inv)
+        else:
+            save_investigation(root, p, inv, data)
+    elif action == 'start':
+        if inv and inv.get('status') != 'closed':
+            raise SystemExit('Existing investigation must not be replaced or reset')
+        if data.get('actor_role') != 'project_manager_agent':
+            raise SystemExit('Investigation start requires PM')
+        inv = {'investigation_id': p.require_text(data, 'investigation_id'), 'kind': 'investigation',
+               'status': 'active', 'owner_decision_required': False, 'iterations': 0, 'failed_gates': 0,
+               'candidate_hashes': [], 'risk_level': data.get('risk_level', 'normal'),
+               'scope_expansion_forbidden': data.get('scope_expansion_forbidden', True)}
+        for key in STOP_LIMITS:
+            if key in data:
+                if type(data[key]) is not int or data[key] <= 0:
+                    raise SystemExit('stop-loss boundary must be positive integer')
+                inv[key] = data[key]
+        if inv['risk_level'] not in {'normal', 'high'}:
+            raise SystemExit('Invalid investigation risk level')
+        if inv['risk_level'] == 'high' and not any(key in inv for key in STOP_LIMITS):
+            raise SystemExit('High-risk investigation needs at least one stop-loss boundary')
+        save_investigation(root, p, inv, data)
+    elif action == 'scope':
+        if data.get('actor_role') not in {'project_manager_agent', 'code_executor', 'analysis_review_agent'}:
+            raise SystemExit('Scope reporting requires project role')
+        scope = strings(data.get('scope_expansion', []), 'scope_expansion')
+        if not scope:
+            raise SystemExit('Scope expansion must identify the added infrastructure/capability')
+        p.require_text(data, 'reason')
+        inv = inv or {'investigation_id': 'scope', 'iterations': 0, 'candidate_hashes': [], 'failed_gates': 0}
+        inv.update(status='blocked', owner_decision_required=True, scope_expansion=scope, reason_code='OWNER_SCOPE_DECISION_REQUIRED')
+        save_investigation(root, p, inv, data)
+    elif action == 'record':
+        investigation_guard(root, p)
+        if not inv or inv.get('status') == 'closed':
+            raise SystemExit('No active investigation')
+        if data.get('actor_role') not in {'project_manager_agent', 'analysis_review_agent', 'code_executor'}:
+            raise SystemExit('Investigation checkpoint requires project role')
+        inv['debug_checkpoint'] = checkpoint_fields(root, p, data.get('debug_checkpoint'))
+        inv['iterations'] += 1
+        if data.get('candidate'):
+            value = digest(identity_manifest(root, data['candidate']))
+            if value not in inv['candidate_hashes']:
+                inv['candidate_hashes'].append(value)
+        if data.get('failed_gate_evidence'):
+            record = p.read_json(safe_path(root, data['failed_gate_evidence']))
+            if record.get('status') not in {'fail', 'blocked'} or not record.get('raw'):
+                raise SystemExit('Failed gate requires retained failure evidence')
+            for raw in record['raw']:
+                if p.file_hash(safe_path(root, raw['path'])) != raw['sha256']:
+                    raise SystemExit('Failed gate raw evidence changed')
+            inv['failed_gates'] += 1
+        save_investigation(root, p, inv, data)
+    else:
+        raise SystemExit('Investigation action must be start/record/scope/owner-decision')
+    refresh(root, p)
+    emit(investigation_summary(inv) or {'status':'closed','owner_decision_required':False})
+    return 1 if inv.get('owner_decision_required') else 0
+
+
+def investigation_summary(inv):
+    if not inv or inv.get('status') == 'closed':
+        return None
+    result = {k: inv.get(k) for k in ['investigation_id', 'status', 'owner_decision_required', 'reason_code', 'iterations', 'failed_gates']}
+    if inv.get('debug_checkpoint'):
+        result['debug_checkpoint'] = checkpoint_summary(inv['debug_checkpoint'])
+    result['next_step'] = 'Wait for project owner decision' if inv.get('owner_decision_required') else (result.get('debug_checkpoint') or {}).get('next_check', 'Continue bounded investigation only')
+    return result
+
+
+def read_runtime_audit(root, p, runtime):
+    """Read-only auditor: no execution or mutation of runtime/previous audits."""
+    c = runtime['contract']; identity = runtime['identity']
+    try:
+        if digest(identity_manifest(root, c['candidate'])) != identity['candidate_source_hash']:
+            raise SystemExit('Candidate identity changed')
+        if digest(c) != identity['acceptance_contract_hash']:
+            raise SystemExit('Contract identity changed')
+        for raw in runtime['raw']:
+            if hard_file(root, raw['path'])['sha256'] != raw['sha256']:
+                raise SystemExit('Raw evidence identity changed: ' + raw['path'])
+        report = runtime.get('report')
+        if not isinstance(report, dict):
+            raise SystemExit('Harness did not produce a structured runtime result')
+        rows = report.get('coverage')
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise SystemExit('Coverage must be structured rows, not bool/model assertions')
+        if len({row.get('criterion_id') for row in rows}) != len(rows):
+            raise SystemExit('Duplicate actual coverage criteria')
+        out = []
+        raw_paths = {x['path'] for x in runtime['raw'] if x['bytes'] > 0}
+        for requirement in c['coverage']:
+            cid = requirement['criterion_id']
+            row = next((x for x in rows if x.get('criterion_id') == cid), {})
+            if row.get('status') != 'pass' or row.get('evidence_kind') != requirement['required_evidence_kind']:
+                raise SystemExit('Evidence kind/status cannot satisfy criterion: ' + cid)
+            if row.get('actual_entrypoint') != requirement['actual_entrypoint'] or set(strings(row.get('actual_participants', []), 'actual participants')) != set(requirement['actual_participants']):
+                raise SystemExit('Coverage entrypoint/participants mismatch: ' + cid)
+            refs = strings(row.get('actual_evidence', []), 'actual_evidence')
+            if any(Path(x).name in {'contract.json','runtime-result.json','runtime.json','summary.json'} or Path(x).name.startswith('audit-') for x in refs):
+                raise SystemExit('Contract/result/summary cannot replace raw runtime evidence')
+            actual = [identity['evidence_directory'] + '/' + x for x in refs]
+            if not refs or set(actual) - raw_paths:
+                raise SystemExit('Coverage requires retained nonempty raw evidence: ' + cid)
+            if row['evidence_kind'] in {'runtime', 'integration', 'browser', 'external-system'}:
+                if not runtime.get('process_started') or report.get('candidate_runtime_status') != 'PASS':
+                    raise SystemExit('No captured runtime execution for criterion: ' + cid)
+            if row['evidence_kind'] == 'manual':
+                if c.get('manual_acceptance', {}).get('actor_role') != 'project_owner' or c['manual_acceptance'].get('approved') is not True:
+                    raise SystemExit('Manual evidence cannot be approved by automatic verification')
+            out.append({**requirement, **row, 'actual_evidence': actual})
+        if runtime.get('failure_class'):
+            return {'status': 'fail', 'failure_class': runtime['failure_class'], 'reason': 'Runtime/harness execution did not complete successfully', 'coverage': out}
+        return {'status': 'pass', 'failure_class': None, 'coverage': out}
+    except (SystemExit, ValueError, KeyError, TypeError, OSError) as exc:
+        return {'status': 'fail', 'failure_class': 'EVIDENCE_INSUFFICIENT', 'reason': str(exc), 'coverage': []}
+
+
+
+def hardening_evidence(root, p, data, active):
+    action = data.get('action', 'preflight')
+    if data.get('actor_role') not in {'project_manager_agent', 'code_executor', 'integration_reviewer'}:
+        raise SystemExit('Acceptance evidence requires execution/review role')
+    if data.get('level') not in {'L1','L2','L3','L4','L5'}:
+        raise SystemExit('Acceptance evidence requires L1..L5')
+    if action == 'audit':
+        source = p.read_json(safe_path(root, p.require_text(data, 'summary')))
+        runtime_path = safe_path(root, source['runtime_record'])
+        if p.file_hash(runtime_path) != source['runtime_sha256']:
+            raise SystemExit('Frozen runtime record changed')
+        runtime = p.read_json(runtime_path)
+        if digest(data['acceptance_contract']) != runtime['identity']['acceptance_contract_hash'] or (data.get('run_id') and data['run_id'] != runtime['identity']['evidence_run_id']):
+            emit({'status':'blocked','failure_class':'CONTRACT_INCOMPATIBLE','reason':'Audit only verifies the original contract/run; a new contract requires a new evidence run','candidate_runtime_status':runtime['candidate_runtime_status']})
+            return 1
+        if data.get('auditor_error'):
+            audit = {'status':'fail', 'failure_class':'AUDITOR_FAILURE', 'reason':p.require_text(data,'auditor_error'), 'coverage':[]}
+        else:
+            audit = guarded_runtime_audit(root, p, runtime)
+        ref = source['identity']['evidence_directory'] + '/audit-' + uuid.uuid4().hex + '.json'
+        with (root/ref).open('xb') as f:
+            f.write(encoded({**audit, 'runtime_record':source['runtime_record'], 'runtime_sha256':source['runtime_sha256']}))
+        emit({**audit, 'candidate_runtime_status':runtime['candidate_runtime_status'], 'acceptance_contract_hash':runtime['identity']['acceptance_contract_hash'], 'evidence_run_id':runtime['identity']['evidence_run_id'], 'audit':ref})
+        return 0 if audit['status'] == 'pass' else 1
+    if action not in {'preflight', 'run'}:
+        raise SystemExit('Acceptance protocol supports preflight/run/audit; legacy import is not runtime proof')
+    investigation_guard(root, p)
+    try:
+        identity = contract_preflight(root, p, data)
+        if identity['compatibility'] != 'compatible_without_candidate_change':
+            emit({**identity, 'status':'blocked','failure_class':'CONTRACT_INCOMPATIBLE','candidate_runtime_status':'NOT_RUN'})
+            return 1
+    except (SystemExit, ValueError, OSError, KeyError, TypeError) as exc:
+        emit({'status':'blocked','failure_class':'CONTRACT_INCOMPATIBLE','compatibility':'incompatible','candidate_runtime_status':'NOT_RUN','reason':str(exc)})
+        return 1
+    if action == 'preflight':
+        emit({**identity,'status':'ready','candidate_runtime_status':'NOT_RUN'})
+        return 0
+    c = data['acceptance_contract']
+    purpose = data.get('purpose','batch' if active else 'stage')
+    if purpose not in {'batch','stage','release'} or (purpose == 'batch' and not active):
+        raise SystemExit('Invalid evidence purpose/batch')
+    if active and not active.get('acceptance_contract_hash'):
+        raise SystemExit('Bind the acceptance contract to this batch before typed execution')
+    expected = active.get('acceptance_contract_hash')
+    if expected and expected != identity['acceptance_contract_hash']:
+        raise SystemExit('Acceptance contract differs from active batch; revise through PM context review')
+    rel = Path(identity['evidence_directory']); dest = root / rel
+    dest.mkdir(parents=True, exist_ok=False)  # Reserve once; failed/crashed runs remain.
+    p.write_json(dest / 'contract.json', c)
+    investigation_attempt(root, p, identity['candidate_source_hash'], begin=True)
+    env = os.environ.copy(); env.update(AI_ACCEPTANCE_CONTRACT=str(dest/'contract.json'), AI_EVIDENCE_DIR=str(dest), AI_EVIDENCE_RUN_ID=identity['evidence_run_id'])
+    stdout, stderr, code, started, failure = b'', b'', None, False, None
+    try:
+        contract_preflight(root, p, data, reuse=True)
+        proc = subprocess.Popen(c['harness']['argv'], cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        started = True
+        try:
+            stdout, stderr = proc.communicate(timeout=c['timeout_seconds'])
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                stdout, stderr = exc.stdout or b'', (exc.stderr or b'') + b'\nHarness descendants did not release capture pipes; owner/environment cleanup required.'
+                proc.stdout.close(); proc.stderr.close()
+            code = 124
+            failure = 'ENVIRONMENT_BLOCKED'
+    except (OSError, SystemExit) as exc:
+        stderr = str(exc).encode('utf-8'); failure = 'HARNESS_FAILURE'
+    for name, content in [('stdout.log',stdout),('stderr.log',stderr)]:
+        with (dest/name).open('xb') as f:
+            f.write(content)
+    report = None
+    try:
+        if (dest/'runtime-result.json').exists():
+            hard_file(root, (rel/'runtime-result.json').as_posix())
+            report = p.read_json(dest/'runtime-result.json')
+            if not isinstance(report, dict) or report.get('candidate_runtime_status') not in {'NOT_RUN','PASS','FAIL','UNKNOWN'}:
+                raise ValueError('Invalid candidate runtime status')
+    except (OSError, ValueError, SystemExit, TypeError) as exc:
+        report = None; failure = 'HARNESS_FAILURE'
+        with (dest/'collection-error.log').open('xb') as f: f.write(str(exc).encode('utf-8'))
+    try:
+        if digest(identity_manifest(root,c['harness'])) != identity['harness_source_hash'] or executable_identity(c['harness']) != identity['executable_identity'] or p.read_json(dest/'contract.json') != c:
+            raise SystemExit('Harness/executable/contract identity changed during capture')
+    except (SystemExit,OSError,ValueError) as exc:
+        failure = 'HARNESS_FAILURE'
+        with (dest/('identity-error-' + uuid.uuid4().hex + '.log')).open('xb') as f: f.write(str(exc).encode('utf-8'))
+    runtime_status = report.get('candidate_runtime_status', 'NOT_RUN') if report else 'NOT_RUN'
+    if not failure:
+        if code != 0 or report is None:
+            failure = 'HARNESS_FAILURE'
+        elif report.get('failure_class'):
+            failure = report['failure_class'] if report['failure_class'] in FAILURE_CLASSES else 'EVIDENCE_INSUFFICIENT'
+        elif runtime_status == 'FAIL':
+            failure = 'CANDIDATE_FAILURE'
+    raw = []
+    try:
+        names = {'stdout.log','stderr.log','contract.json'}
+        if report:
+            names.add('runtime-result.json')
+            for row in report.get('coverage', []) if isinstance(report.get('coverage'), list) else []:
+                if isinstance(row, dict):
+                    names.update(strings(row.get('actual_evidence', []), 'actual_evidence'))
+        for name in sorted(names):
+            target_rel = (rel / name).as_posix()
+            item = hard_file(root, target_rel)
+            if not (root / target_rel).resolve().is_relative_to(dest.resolve()):
+                raise SystemExit('Raw evidence escaped its run directory')
+            raw.append({'path':target_rel,'sha256':item['sha256'],'bytes':(root/target_rel).stat().st_size})
+    except (SystemExit, OSError, ValueError) as exc:
+        failure = 'EVIDENCE_INSUFFICIENT'
+        with (dest/('collection-error-' + uuid.uuid4().hex + '.log')).open('xb') as f: f.write(str(exc).encode('utf-8'))
+    runtime = {'schema':'acceptance/1', 'identity':identity, 'contract':c, 'raw':raw,
+               'candidate_runtime_status':runtime_status,'failure_class':failure, 'report':report,
+               'process_started':started,'exit_code':code,'argv':c['harness']['argv'], 'created_at':p.now_iso(),
+               'audit_metadata':{'root_directory_mtime_ns':root.stat().st_mtime_ns}}
+    with (dest/'runtime.json').open('xb') as f:
+        f.write(encoded(runtime))
+    audit = guarded_runtime_audit(root, p, runtime)
+    if failure and failure != 'EVIDENCE_INSUFFICIENT':
+        audit.update(status='fail',failure_class=failure)
+    summary = {**identity, **audit, 'identity':identity, 'schema':'acceptance/1','evidence_kind':'mixed',
+               'candidate_runtime_status':runtime_status, 'raw':raw,'level':data['level'],
+               'batch_id':active.get('batch_id'),'context_fingerprint':active.get('context_fingerprint'),
+               'formal_fact_hashes':p.current_audit_hashes(root), 'stage_id':p.load_project_state(root).get('current_stage'),
+               'purpose':data.get('purpose','batch' if active else 'stage'),
+               'runtime_record':(rel/'runtime.json').as_posix(),'runtime_sha256':p.file_hash(dest/'runtime.json')}
+    with (dest/'summary.json').open('xb') as f:
+        f.write(encoded(summary))
+    state = p.load_project_state(root)
+    state['layered_test_contract'] = True
+    state.setdefault('test_summaries',{})[summary['purpose']] = (rel/'summary.json').as_posix()
+    p.save_project_state(root,state)
+    investigation_attempt(root,p,identity['candidate_source_hash'],failed=audit['status'] != 'pass')
+    result = {key: summary[key] for key in ['candidate_revision','candidate_source_hash','acceptance_contract_revision','acceptance_contract_hash','harness_revision','evidence_run_id','status','failure_class','candidate_runtime_status']}
+    result.update(summary=(rel/'summary.json').as_posix(),coverage_count=len(audit['coverage']))
+    if audit.get('reason'): result['reason'] = audit['reason']
+    emit(result)
+    return 0 if audit['status'] == 'pass' else 1
+
+
+def verify_hardening_evidence(root, p, data, active):
+    path = safe_path(root, data['runtime_record'])
+    if p.file_hash(path) != data['runtime_sha256']:
+        raise SystemExit('Frozen runtime evidence changed')
+    runtime = p.read_json(path)
+    audit = guarded_runtime_audit(root,p,runtime)
+    if audit['status'] != 'pass' or runtime.get('failure_class'):
+        raise SystemExit('Acceptance evidence is stale/insufficient: ' + audit.get('reason','runtime failure'))
+    if data.get('acceptance_contract_hash') != runtime['identity']['acceptance_contract_hash']:
+        raise SystemExit('Evidence contract identity mismatch')
+    if active and not active.get('acceptance_contract_hash'):
+        raise SystemExit('Legacy batch cannot substitute typed evidence for its implementation fingerprint')
+    if active and active.get('acceptance_contract_hash') and active['acceptance_contract_hash'] != data['acceptance_contract_hash']:
+        raise SystemExit('Evidence belongs to a different acceptance contract')
+
+
+def guarded_runtime_audit(root, p, runtime):
+    try:
+        return read_runtime_audit(root, p, runtime)
+    except Exception as exc:
+        return {'status':'fail','failure_class':'AUDITOR_FAILURE','reason':type(exc).__name__ + ': ' + str(exc),'coverage':[]}

@@ -1,4 +1,4 @@
-# V1.9.0 快速开始
+# V1.9.1 快速开始
 
 1. 进入自己克隆或解压的 current 目录，打开 [使用说明.html](使用说明.html)。预填和留空回退都是作者示例，必须核对并填写自己的实际模板路径；目标目录保持独立。
 2. 填写新项目名称、简介、目录、类型和 Lite/Standard/Auto。
@@ -18,3 +18,5 @@ Lite 变大时由所有者明确授权升级 Standard，保留原目录、Git和
 工作区测试从 current 运行 `python -B run_tests.py --report-dir ../validation/local-run`，原始输出不写入源码目录。
 
 运行需 Python 3.11+ 与 Git，完整测试另需 Node.js 24。采用 [MIT](LICENSE)，署名 FeiXiaorong；生成材料及业务代码边界见 [许可说明](LICENSE_STATUS.md)。
+
+V1.9.1 的可选验证设施合同及调查止损见 [设计与实际验证](TEST_INFRASTRUCTURE_DESIGN.md)；旧项目先读 [人工升级与迁移](UPGRADE_V1.9.1.md)。初始化文件数不变，旧请求没有被自动赋予新保障。

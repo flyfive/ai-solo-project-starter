@@ -37,3 +37,7 @@ L1 Unit/Local；L2 Module；L3 Parent Batch Regression；L4 Stage/Integration；
 ## 任务约束与排错
 
 遵守 AGENTS 的任务与结束约束；字段细节只按需读取 README 对应章节，不重复加载已读且未变化的正文。原风险测试与人工验收门禁不变。
+
+## V1.9.1 验证设施边界
+
+新 planned/高风险/L3+ 验证采用 README 的“测试设施合同”；调查/范围扩张按“调查止损与范围决定”按需读取。Candidate、Contract、Harness、Evidence 分离；旧历史不重写，已有治理门禁继续有效。完整字段不在本入口重复。

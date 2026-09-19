@@ -286,3 +286,7 @@ Standard 模式采用严格状态机：未完成执行只能记录为 `PARTIAL/B
 ## 可选任务与排错扩展（兼容 V1.9.0）
 
 沿用原批次状态、checks、证据和人工验收，未携带可选字段的旧输入维持原契约，不补 PASS。task_contract/debug_checkpoint 字段仅在使用时读取 README 的“任务字段与结束核对”/“排错字段”，本契约不重复正文。
+
+## V1.9.1 验证设施边界
+
+新 planned/高风险/L3+ 验证采用 README 的“测试设施合同”；调查/范围扩张按“调查止损与范围决定”按需读取。Candidate、Contract、Harness、Evidence 分离；旧历史不重写，已有治理门禁继续有效。完整字段不在本入口重复。

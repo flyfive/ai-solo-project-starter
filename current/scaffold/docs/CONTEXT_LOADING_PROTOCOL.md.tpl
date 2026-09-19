@@ -59,3 +59,5 @@ python tools/project.py ai-resume --mode full --full-reason stage_audit
 新 context_refs/Parent Batch/提升级别启用持久 layered_test_contract；阶段验收要求 L4 purpose=stage，发布要求 L5 purpose=release。ai-evidence 请求显式声明 purpose。旧请求保留原有严格 PASS/集成测试规则；新项目 PM 应使用精确引用启用新契约。证据记录源事实与实现指纹，代码或正式事实改变后重新验证，不能复用过期结果。
 
 默认只读一份 manifest；HANDOFF_CURRENT 为替代导航，不与 CURRENT_STATE/manifest 叠加。README 字段说明仅建立/结束新契约任务时按节读取，排错节只在排错时读取；已读且未变不重复。完整最新检查点位于 active_batch.debug_checkpoint，CURRENT_STATE 只导航，旧尝试不进入 Hot。
+
+V1.9.1 活动调查存在时，manifest.investigation 仅含当前边界状态和最新检查点；owner_decision_required 优先阻止自动继续。合同全文、coverage 和旧 raw 不进 Hot，按 README 对应节读取。

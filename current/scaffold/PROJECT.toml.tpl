@@ -1,5 +1,5 @@
 schema_version = "1.9.0"
-template_version = "1.9.0"
+template_version = "1.9.1"
 
 [project]
 name = {{PROJECT_NAME_TOML}}
@@ -194,3 +194,9 @@ require_release_baseline_for_delivery = true
 verify_customer_delivery_documents = true
 require_final_acceptance_before_closure = {{FINAL_ACCEPTANCE_REQUIRED}}
 require_reproducible_regression_tests = true
+
+# Opt-in protocol; legacy requests never gain new guarantees implicitly.
+[acceptance_infrastructure]
+protocol = "acceptance/1"
+contract_revision_independent = true
+volatile_metadata_default = "audit_only"

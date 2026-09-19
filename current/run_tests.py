@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run V1.9.0 regression cases in isolated, parallel Python processes.
+"""Run starter regression cases in isolated, parallel Python processes.
 
 Each test owns a separate temporary Git repository. Process isolation prevents Git
 hooks, imported project modules, and platform-specific file handles from leaking

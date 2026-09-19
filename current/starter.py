@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""个人 AI 开发项目启动器 V1.9.0。
+"""个人 AI 开发项目启动器 V1.9.1。
 
 用户通过自然语言把项目名称、目录、类型和简介告诉具备本地权限的项目角色，
 由该角色内部调用本工具。备用双击入口仍保留，但不属于日常工作流。
 
-V1.9.0 使用临时目录完成渲染、配置解析、Git 初始化、初始提交、Hook 安装和健康检查；
+V1.9.1 使用临时目录完成渲染、配置解析、Git 初始化、初始提交、Hook 安装和健康检查；
 全部成功后才原子替换目标目录，避免留下半初始化项目。
 """
 from __future__ import annotations
@@ -221,7 +221,7 @@ def validate_generated_project(target: Path) -> None:
     project_toml = target / "PROJECT.toml"
     with project_toml.open("rb") as fh:
         data = tomllib.load(fh)
-    if data.get("template_version") != "1.9.0":
+    if data.get("template_version") != "1.9.1":
         raise RuntimeError("PROJECT.toml 模板版本校验失败。")
     mode = data.get("governance", {}).get("mode")
     if mode not in {"lite", "standard"}:
@@ -269,7 +269,7 @@ def initialize_git(target: Path) -> None:
     try:
         subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True, text=True)
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"Git 初始化失败；V1.9.0 项目治理模式要求 Git：{exc}") from exc
+        raise RuntimeError(f"Git 初始化失败；V1.9.1 项目治理模式要求 Git：{exc}") from exc
 
 
 def create_initial_commit(target: Path) -> str:
@@ -301,7 +301,7 @@ def create_initial_commit(target: Path) -> str:
             )
         subprocess.run(["git", "add", "-A"], cwd=target, check=True, capture_output=True, text=True)
         subprocess.run(
-            ["git", "commit", "-m", "Initialize project from template V1.9.0"],
+            ["git", "commit", "-m", "Initialize project from template V1.9.1"],
             cwd=target,
             check=True,
             capture_output=True,
@@ -354,7 +354,7 @@ def create_project(args: argparse.Namespace) -> int:
     profile_names = sorted(profiles)
     interactive = not all([args.target, args.name, args.description, args.profile])
     if interactive:
-        print("\n个人 AI 开发项目启动模板 V1.9.0（备用人工入口）\n")
+        print("\n个人 AI 开发项目启动模板 V1.9.1（备用人工入口）\n")
         target = Path(args.target or ask("项目目标目录", str(Path.cwd() / "new-project"))).expanduser()
         name = args.name or ask("项目名称")
         description = args.description or ask("一句话项目简介")
@@ -542,7 +542,7 @@ def create_project(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="个人 AI 开发项目启动器 V1.9.0")
+    parser = argparse.ArgumentParser(description="个人 AI 开发项目启动器 V1.9.1")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="创建强制文档写回项目")
     init.add_argument("--target")

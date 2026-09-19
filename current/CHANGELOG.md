@@ -1,5 +1,15 @@
 # 变更日志
 
+## V1.9.1
+
+- 新增兼容的 acceptance/1 合同路径，Candidate/Contract/Harness/Run 独立身份；原请求 schema 不变。
+- ai-evidence 增加无执行 preflight、显式 evidence kind/coverage、只读追加审计与工具失败分类。
+- 候选 SHA/规范路径/文件类型/链接状态为身份；volatile 目录时间默认只审计。
+- 复用 ai-context 和 debug_checkpoint 增加调查止损、所有者范围决定与简短恢复摘要。
+- 生成项目不增加初始文件/运行依赖；详细协议在 README 按需读取。
+- 增加真实初始化、运行、状态重读与兼容反例；结果见 TEST_INFRASTRUCTURE_DESIGN 的实施记录。
+- 不自动迁移真实项目、不改写旧证据；人工三方合并见 UPGRADE_V1.9.1.md。
+
 ## V1.9.0
 
 - 保留完整治理，新增Hot/Task/Cold协议、按ID正文提取和可重建三类索引；
