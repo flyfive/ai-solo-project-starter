@@ -1,5 +1,5 @@
 schema_version = "1.9.0"
-template_version = "1.9.1"
+template_version = "1.9.2"
 
 [project]
 name = {{PROJECT_NAME_TOML}}

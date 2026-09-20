@@ -90,3 +90,5 @@ Standard 用于持续数周或数月、多模块、多阶段、多人／多执�
 - 字段细节按任务读取 README 的“任务字段与结束核对”；排错时再读“排错字段”。已经读过且未变化不重复读。ai-resume JSON 与 context.json 二选一，HANDOFF 是替代导航，不叠加读取。
 
 测试设施/调查任务按需读 README 对应合同与止损章节；owner_decision_required 时停止自动运行、改版和扩展。不得把兼容旧输入当成已取得新保障。
+
+Standard blocked/partial 且无未关闭 Change 时，可按 README“Standard 非成功批次交接”由 PM 登记强绑定所有者授权；handoff 不是 PASS。pending successor 时只能启动具名继任，禁止删除锁绕过。字段和事务规则只按需读取该节。

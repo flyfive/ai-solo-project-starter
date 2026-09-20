@@ -236,9 +236,9 @@ def selected_context(root, p, index, active, task=''):
     return refs, selected, stale
 
 
-def refresh(root, p, task='', accept=False, actor='', reason=''):
+def refresh(root, p, task='', accept=False, actor='', reason='', *, preview=None, payloads=None):
     index = build_index(root, p)
-    active = p.read_json(root / p.ACTIVE_FILE, default=None)
+    active = preview['active'] if preview is not None else p.read_json(root / p.ACTIVE_FILE, default=None)
     if accept:
         if actor != 'project_manager_agent' or not reason.strip():
             raise SystemExit('Accepting changed context requires PM role and a reread/review reason.')
@@ -257,10 +257,13 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
             active['context_review'] = {'at': p.now_iso(), 'reason': reason, 'actor_role': actor}
             p.write_json(root / p.ACTIVE_FILE, active)
     refs, selected, stale = selected_context(root, p, index, active, task)
-    state = p.load_project_state(root)
+    state = preview['state'] if preview is not None else p.load_project_state(root)
     changes = p.open_changes(root)
     suspended = p.read_json(root / p.SUSPENDED_PROMOTION_BATCH_FILE, default=None)
     priority = p.resume_priority(state, changes, active, suspended)
+    pending = state.get('pending_batch_handoff')
+    if preview is None and (pending or (root / p.PENDING_BATCH_HANDOFF_FILE).exists()):
+        p.checked_pending_handoff(root)
     latest = p.read_json(root / p.LATEST_FILE, default={})
     summary = None if not active else {k: active.get(k) for k in ['batch_id', 'stage_id', 'title', 'goal', 'status', 'scope', 'blockers', 'context_refs']}
     if summary is not None:
@@ -278,6 +281,8 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
                       'complete_pending_change': '优先完成未关闭变更及必要重新验收',
                       'complete_governance_promotion': '完成已授权的治理升级并恢复挂起批次'}
     next_step = 'Refresh relevant facts with PM before implementation' if stale else priority_tasks.get(priority, short((active or {}).get('goal')) or short(latest.get('next_task')) or '建立当前需求与任务引用')
+    if pending and priority == 'start_handoff_successor':
+        next_step = 'Start named successor ' + pending['successor_batch_id'] + '; responsibilities only, not PASS: ' + pending['record_path']
     checkpoint = checkpoint_summary((active or {}).get('debug_checkpoint'))
     if checkpoint and not stale and priority == 'resume_active_batch' and active.get('status') in {'active', 'partial', 'blocked'}:
         next_step = checkpoint['next_check']
@@ -297,6 +302,10 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
                 'policy_hashes': index['policy_hashes'],
                 'metrics': {'unit': 'utf8_bytes_and_characters_not_tokens', 'cold_history_loaded': False,
                             'selected_requirements': len(refs['requirements']), 'selected_architecture': len(refs['architecture']), 'selected_decisions': len(refs['decisions'])}}
+    if pending:
+        manifest['pending_batch_handoff'] = pending
+    if active and active.get('inherited_handoff'):
+        manifest['active_batch']['inherited_handoff'] = {k:active['inherited_handoff'][k] for k in ['handoff_id','source_batch_id','record_path']}
     inv_summary = investigation_summary(investigation_state(root, p))
     if inv_summary:
         manifest['investigation'] = inv_summary
@@ -328,14 +337,19 @@ def refresh(root, p, task='', accept=False, actor='', reason=''):
     if checkpoint:
         snapshot += '\n- 最新排错检查点：见 context.json 的 active_batch.debug_checkpoint（只读该处，不加载旧尝试）'
     state_path = root / 'docs/CURRENT_STATE.md'
-    p.update_auto_block(state_path, snapshot)
+    rendered = [(state_path, p.auto_region_bytes(state_path, p.AUTO_START, p.AUTO_END, snapshot))]
     if p.governance_mode(root) == 'standard':
-        p._write_bytes_atomically(root / INDEX, encoded(index))
-    p.write_json(root / p.CONTEXT_FILE, manifest)
+        rendered.append((root / INDEX, encoded(index)))
+    rendered.append((root / p.CONTEXT_FILE, p.json_bytes(manifest)))
     handoff = '# 当前任务接管\n\n- 当前治理模式：`' + p.governance_mode(root) + '`\n\n先读 START_HERE、AGENTS 和 CURRENT_STATE，再读取 context.json 中的选定索引及 L2 正文。\n\n' + snapshot + '\n\n- 当前上下文状态：' + ('STALE，PM 重新读取确认后刷新' if stale else 'CURRENT') + '\n'
     if checkpoint:
         handoff += '\n- 最新假设：' + checkpoint['hypothesis'] + '\n- 其余排错事实见 context.json 的 active_batch.debug_checkpoint。\n'
-    (root / p.HANDOFF_FILE).write_text(handoff, encoding='utf-8', newline='\n')
+    rendered.append((root / p.HANDOFF_FILE, handoff.encode('utf-8')))
+    if payloads is not None:
+        payloads.extend(rendered)
+    else:
+        for path, content in rendered:
+            p._write_bytes_atomically(path, content)
     return manifest
 
 
@@ -960,6 +974,8 @@ def run(args, p):
                 restored['context_fingerprint'] = reference_fingerprint(build_index(root, p), restored.get('context_refs', {}))
                 restored['context_review'] = {'reason': 'Owner-authorized promotion baseline audit completed', 'actor_role': 'project_manager_agent'}
                 p.write_json(root / p.ACTIVE_FILE, restored)
+    if getattr(args, '_handoff_transaction_complete', False):
+        return code
     if code in {0, 1} and command == 'ai-start':
         active = p.read_json(root / p.ACTIVE_FILE)
         if active.get('layered_test_contract'):

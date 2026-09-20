@@ -1,4 +1,4 @@
-# 个人 AI 开发项目启动模板 V1.9.1
+# 个人 AI 开发项目启动模板 V1.9.2
 
 完整治理 + 分层上下文 + 按需读取。事实完整保存，日常任务只加载当前必需内容；不以删除历史、减少需求或省略测试换取上下文缩小。
 
@@ -50,8 +50,12 @@ L1 局部、L2 模块、L3 父批、L4 阶段、L5 发布；高风险至少 L4�
 
 ## 文档与验证
 
-[快速开始](QUICK_START.md)、[设计说明](CONTEXT_GOVERNANCE_DESIGN.md)、[当前升级说明](UPGRADE_V1.9.1.md)、[V1.9.0 历史迁移说明](MIGRATION_V1.8.1_TO_V1.9.0.md)。旧报告仅为历史背景，不是当前通过保证，候选公开内容不依赖本地维护记录或原始日志。
+[快速开始](QUICK_START.md)、[设计说明](CONTEXT_GOVERNANCE_DESIGN.md)、[当前升级说明](UPGRADE_V1.9.2.md)、[V1.9.0 历史迁移说明](MIGRATION_V1.8.1_TO_V1.9.0.md)。旧报告仅为历史背景，不是当前通过保证，候选公开内容不依赖本地维护记录或原始日志。
 
 从 current 运行 `python -B run_tests.py --report-dir ../validation/local-run`；`RUN_TESTS.cmd` 不转发报告目录参数。失败日志保留在指定目录。仅确有需要且另获发布授权时才考虑打包，不自动迁移真实项目。
 
 V1.9.1 的可选验证设施合同及调查止损见 [设计与实际验证](TEST_INFRASTRUCTURE_DESIGN.md)；旧项目先读 [人工升级与迁移](UPGRADE_V1.9.1.md)。初始化文件数不变，旧请求没有被自动赋予新保障。
+
+## V1.9.2 Standard 非成功交接
+
+Standard 的 BLOCKED/PARTIAL 可在无未关闭 Change、具名继任已定义且所有者强绑定授权后使用 `ai-handoff-batch`。责任移交不是 PASS，不更改需求或验收；下一次只能启动冻结的继任。原 Lite 升级挂起及旧请求不变。见 [设计](STANDARD_BATCH_HANDOFF_DESIGN.md)、[缺口分析](STANDARD_BATCH_HANDOFF_GAP_ANALYSIS.md)和[人工升级](UPGRADE_V1.9.2.md)。生成项目字段按需读其 README。

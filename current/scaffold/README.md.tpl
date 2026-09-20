@@ -6,7 +6,7 @@
 
 - 项目类型：{{PROFILE_LABEL}}（`{{PROJECT_PROFILE}}`）
 - 治理模式：{{GOVERNANCE_MODE_LABEL}}（`{{GOVERNANCE_MODE}}`）
-- 模板版本：V1.9.1
+- 模板版本：V1.9.2
 
 任何项目角色先读取 `START_HERE.md`，再按当前治理模式接管。
 
@@ -100,3 +100,33 @@ action=record 保存现有格式 debug_checkpoint，可选 candidate 清单、fa
 发现新服务/数据库/MQ/长期 secret/native helper/管理员权限/驱动/加密体系/威胁模型、由项目受控执行转向 hostile-host、任务外基础设施，均先报告 scope expansion。action=scope、scope_expansion=[具体类别]、reason、当前角色，持久 OWNER_SCOPE_DECISION_REQUIRED；planned 批次请求也接受 scope_expansion 并阻断。分类需要执行角色如实申报，不是通用意图识别器。
 
 继续或结束必须 action=owner-decision、actor_role=project_owner、owner_authorization=true、decision=continue/close、reason、decision_evidence=实际反馈文件。继续可明确增加边界但不清零计数；范围扩张还须 approved_scope_expansion 精确批准所报类别。用户反馈由 PM 据实登记，此本地角色协议不是身份认证系统。关闭调查不等于授权新能力，不等于测试 PASS；正常任务仍受原需求/Change/风险/人工验收规则约束。绕开工具直接执行或编辑文件无法由本工具禁止。
+
+## Standard 非成功批次交接（按需）
+
+`python tools/project.py ai-handoff-batch --input .ai/runtime/batch_handoff.json`：仅 Standard，且真实 active 为 blocked/partial、没有任何 open changes。不是 PASS / not acceptance，不更改需求、阶段验收或 last_closed_batch。普通 ACTIVE/等待验收/已反馈状态不能使用。Lite 继续原 ai-suspend-for-promotion。
+
+继任定义使用现有 batch request JSON 加 `"status":"planned"`，例如 docs/successor.json：
+
+```json
+{"batch_id":"NEXT-01","stage_id":"S1","title":"完成剩余责任","goal":"验证未完成条件","scope":["原范围剩余工作"],"acceptance_criteria":["原条件获得真实证据"],"status":"planned"}
+```
+
+由执行工具计算文件真实 SHA-256，登记实际所有者反馈文件，不把下例占位符当有效授权：
+
+```json
+{
+  "actor_role":"project_manager_agent",
+  "source_batch_id":"SOURCE-01",
+  "successor_batch_id":"NEXT-01",
+  "reason":"原批次受阻，责任正式移交",
+  "unfinished_work":["待完成条件"],
+  "transferred_obligations":["保留失败证据并完成适用人工验收"],
+  "successor_contract":{"path":"docs/successor.json","sha256":"<真实SHA256>","successor_batch_id":"NEXT-01"},
+  "owner_authorization":{"source_batch_id":"SOURCE-01","successor_batch_id":"NEXT-01","granted":true,
+    "source_ref":{"path":"docs/evidence/owner-approval.txt","sha256":"<真实SHA256>"},"note":"实际反馈说明"}
+}
+```
+
+历史在 `.ai/history/batch_handoffs/<id>/`；源快照保留原字节，record 为 batch_handoff/1、status=handed_off。运行锁 `.ai/runtime/pending_batch_handoff.json` 只允许具名继任启动。将合同作为 `ai-start --request docs/successor.json` 输入，或复制相同定义到普通 batch_request.json；原启动门禁不变。启动重新核对全部绑定并事务消费 marker，历史 activation_status 改为 consumed，其余源事实不改写。失败保留请求与锁，禁止手工删除以启动无关任务。
+
+ai-resume 显示 start_handoff_successor；按需读该记录的责任和证据引用。继任不继承任何 PASS/人工验收/发布批准。health 报身份漂移或孤儿锁时停止处理，不把错误当作无交接。文件授权是可审计声明，不是身份认证；多文件事务针对本地单写者异常回滚，不承诺掉电/并发隔离。

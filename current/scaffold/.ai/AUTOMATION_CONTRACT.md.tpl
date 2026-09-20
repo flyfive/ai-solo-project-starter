@@ -290,3 +290,5 @@ Standard 模式采用严格状态机：未完成执行只能记录为 `PARTIAL/B
 ## V1.9.1 验证设施边界
 
 新 planned/高风险/L3+ 验证采用 README 的“测试设施合同”；调查/范围扩张按“调查止损与范围决定”按需读取。Candidate、Contract、Harness、Evidence 分离；旧历史不重写，已有治理门禁继续有效。完整字段不在本入口重复。
+
+Standard blocked/partial 且无未关闭 Change 时，可按 README“Standard 非成功批次交接”由 PM 登记强绑定所有者授权；handoff 不是 PASS。pending successor 时只能启动具名继任，禁止删除锁绕过。字段和事务规则只按需读取该节。

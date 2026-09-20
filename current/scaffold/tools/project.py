@@ -30,6 +30,7 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import tempfile
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -47,6 +48,9 @@ RUNTIME_DIR = Path(".ai/runtime")
 REQUEST_FILE = RUNTIME_DIR / "batch_request.json"
 RESULT_FILE = RUNTIME_DIR / "batch_result.json"
 ACTIVE_FILE = RUNTIME_DIR / "active_batch.json"
+BATCH_HANDOFF_INPUT_FILE = RUNTIME_DIR / "batch_handoff.json"
+PENDING_BATCH_HANDOFF_FILE = RUNTIME_DIR / "pending_batch_handoff.json"
+BATCH_HANDOFF_HISTORY = Path(".ai/history/batch_handoffs")
 SUBMITTED_FILE = RUNTIME_DIR / "submitted_result.json"
 ACCEPTANCE_FILE = RUNTIME_DIR / "acceptance.json"
 CHANGE_REQUEST_FILE = RUNTIME_DIR / "change_request.json"
@@ -681,6 +685,8 @@ def resume_priority(
         return "resume_active_batch"
     if isinstance(suspended, dict):
         return "complete_governance_promotion"
+    if state.get("pending_batch_handoff"):
+        return "start_handoff_successor"
     return "continue_current_plan"
 
 
@@ -706,6 +712,7 @@ def project_memory_auto_text(
         "resume_active_batch": "继续活动批次",
         "complete_governance_promotion": "完成治理模式升级",
         "continue_current_plan": "按当前规划继续",
+        "start_handoff_successor": "启动具名继任批次 " + str((state.get("pending_batch_handoff") or {}).get("successor_batch_id", "")),
     }[priority_code]
     audit = state.get("last_full_audit")
     audit_text = "尚无" if not isinstance(audit, dict) else f"{audit.get('stage_id', '未标明')} / {audit.get('completed_at', '未知时间')}"
@@ -1683,6 +1690,14 @@ def ai_start(args: argparse.Namespace) -> int:
         require_standard_governance(root, "Parallel execution")
     if request.get("stage_transition") and governance_mode(root, cfg) == "lite":
         require_standard_governance(root, "Formal stage transition")
+    pending_handoff = checked_pending_handoff(root)
+    if pending_handoff:
+        marker, record = pending_handoff
+        if request["batch_id"] != marker["successor_batch_id"]:
+            raise SystemExit("STANDARD_BATCH_HANDOFF_SUCCESSOR_REQUIRED: named successor is pending: " + marker["successor_batch_id"])
+        contract = checked_successor_contract(root, {"path":record["successor_contract_path"], "sha256":record["successor_contract_sha256"], "successor_batch_id":marker["successor_batch_id"]}, record["source_batch_id"])
+        if request != validate_request(contract):
+            raise SystemExit("STANDARD_BATCH_HANDOFF_SUCCESSOR_CONTRACT_MISMATCH")
     changes = open_changes(root)
     captured = [item for item in changes if item.get("status") == "captured"]
     if captured:
@@ -1722,7 +1737,8 @@ def ai_start(args: argparse.Namespace) -> int:
         state["stage_acceptance"] = {
             "stage_id": request["stage_id"], "status": "pending", "note": "", "updated_at": now_iso()
         }
-    save_project_state(root, state)
+    if not pending_handoff:
+        save_project_state(root, state)
 
     active = {
         **request,
@@ -1732,6 +1748,11 @@ def ai_start(args: argparse.Namespace) -> int:
         "memory_hashes": memory_hashes(root),
         "implementation_fingerprint": working_fingerprint(root),
     }
+    if pending_handoff:
+        consume_batch_handoff(root, cfg, state, active, marker, record, request_path)
+        args._handoff_transaction_complete = True
+        print(f"AI_BATCH_STARTED {request['batch_id']} {request['title']}")
+        return 0
     write_json(active_path, active)
     update_project_memory_auto(root, cfg)
     if request_path.exists():
@@ -2150,6 +2171,10 @@ def health(args: argparse.Namespace) -> int:
     passes: list[str] = []
     warnings: list[str] = []
     failures: list[str] = []
+    try:
+        checked_pending_handoff(root)
+    except (SystemExit, OSError, ValueError, TypeError, KeyError) as exc:
+        failures.append("STANDARD_BATCH_HANDOFF_INCONSISTENT: " + str(exc))
     passes.append("Lite 治理模式已启用" if mode == "lite" else "Standard 治理模式已启用")
     for rel in required_project_documents(cfg):
         if (root / rel).exists():
@@ -2495,6 +2520,182 @@ def rotate_log(_: argparse.Namespace) -> int:
     archive = rotate_log_if_needed(root, cfg)
     print(f"AI_LOG_ROTATED {archive}" if archive else "AI_LOG_OK")
     return 0
+
+
+def checked_evidence_ref(root: Path, value: dict) -> tuple[Path, dict]:
+    """Local file/hash reference, not a claim of authenticated owner identity."""
+    value = require_dict(value, "evidence reference")
+    extension, _ = context_extension()
+    rel = require_text(value, "path")
+    extension.hard_file(root, rel)
+    path = extension.safe_path(root, rel)
+    if file_hash(path) != require_text(value, "sha256"):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_REFERENCE_HASH_MISMATCH")
+    return path, {"path":path.relative_to(root).as_posix(), "sha256":file_hash(path)}
+
+
+def checked_owner_authorization(root: Path, value: dict, source: str, successor: str) -> dict:
+    value = require_dict(value, "owner_authorization")
+    if value.get("granted") is not True or value.get("source_batch_id") != source or value.get("successor_batch_id") != successor:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_OWNER_BINDING_REQUIRED")
+    _, ref = checked_evidence_ref(root, value.get("source_ref"))
+    return {"source_batch_id":source, "successor_batch_id":successor, "granted":True,
+            "source_ref":ref, "note":require_text(value, "note")}
+
+
+def checked_successor_contract(root: Path, value: dict, source: str) -> dict:
+    value = require_dict(value, "successor_contract")
+    successor = require_text(value, "successor_batch_id")
+    if successor == source:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_DISTINCT_SUCCESSOR_REQUIRED")
+    path, _ = checked_evidence_ref(root, value)
+    contract = require_dict(read_json(path), "successor batch request")
+    if contract.get("batch_id") != successor or contract.get("status") != "planned":
+        raise SystemExit("STANDARD_BATCH_HANDOFF_SUCCESSOR_IDENTITY_OR_STATUS")
+    validate_request(contract)  # Reuse existing formal batch/task/context/risk contract.
+    return contract
+
+
+def checked_pending_handoff(root: Path):
+    state = load_project_state(root)
+    marker = read_json(root / PENDING_BATCH_HANDOFF_FILE, default=None)
+    expected = state.get("pending_batch_handoff")
+    if marker is None and not expected:
+        return None
+    marker = require_dict(marker, "pending named successor marker")
+    if marker != expected or (root / ACTIVE_FILE).exists() or governance_mode(root) != "standard":
+        raise SystemExit("STANDARD_BATCH_HANDOFF_MARKER_STATE_CONFLICT")
+    hid = require_text(marker, "handoff_id")
+    if not re.fullmatch(r"[0-9a-f]{32}", hid):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_INVALID_ID")
+    expected_path = (BATCH_HANDOFF_HISTORY / hid / "record.json").as_posix()
+    if marker.get("record_path") != expected_path:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_RECORD_PATH_MISMATCH")
+    record_path, _ = checked_evidence_ref(root, {"path":expected_path, "sha256":marker.get("record_sha256")})
+    record = require_dict(read_json(record_path), "batch_handoff/1")
+    if record.get("schema") != "batch_handoff/1" or record.get("status") != "handed_off" or record.get("activation_status") != "pending_successor" or record.get("consumed_at") is not None or record.get("consumed_by_batch_id") is not None:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_NOT_PENDING")
+    for key in ["handoff_id", "source_batch_id", "successor_batch_id", "source_active_snapshot_sha256"]:
+        if record.get(key) != marker.get(key):
+            raise SystemExit("STANDARD_BATCH_HANDOFF_IDENTITY_MISMATCH: " + key)
+    snapshot_path, _ = checked_evidence_ref(root, {"path":(BATCH_HANDOFF_HISTORY / hid / "source_active.json").as_posix(), "sha256":record["source_active_snapshot_sha256"]})
+    snapshot = require_dict(read_json(snapshot_path), "source snapshot")
+    if snapshot.get("batch_id") != record["source_batch_id"] or snapshot.get("status") != record.get("source_status") or record.get("source_status") not in {"blocked", "partial"}:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_SOURCE_IDENTITY_MISMATCH")
+    checked_owner_authorization(root, record["owner_authorization"], record["source_batch_id"], record["successor_batch_id"])
+    checked_successor_contract(root, {"path":record["successor_contract_path"], "sha256":record["successor_contract_sha256"], "successor_batch_id":record["successor_batch_id"]}, record["source_batch_id"])
+    return marker, record
+
+
+def handoff_state_payloads(root: Path, cfg: dict, state: dict, active: dict | None) -> list:
+    payloads = []
+    memory = root / "docs/PROJECT_MEMORY.md"
+    text = replace_project_memory_auto(memory.read_text(encoding="utf-8"), state, open_changes(root), active, None)
+    payloads.append((memory, text.encode("utf-8")))
+    extension, api = context_extension()
+    extension.refresh(root, api, preview={"state":state, "active":active}, payloads=payloads)
+    return payloads
+
+
+def ai_handoff_batch(args: argparse.Namespace) -> int:
+    root = find_root()
+    require_standard_governance(root, "Standard non-success batch handoff")
+    ensure_project_open(root, "Standard batch handoff")
+    if (root / PENDING_BATCH_HANDOFF_FILE).exists() or load_project_state(root).get("pending_batch_handoff"):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_ALREADY_PENDING")
+    active_path = root / ACTIVE_FILE
+    active = require_dict(read_json(active_path), "active batch")
+    if active.get("status") not in {"blocked", "partial"}:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_REQUIRES_BLOCKED_OR_PARTIAL")
+    if open_changes(root):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_OPEN_CHANGES_BLOCKED")
+    extension, api = context_extension()
+    input_path = extension.safe_path(root, str(args.input or BATCH_HANDOFF_INPUT_FILE))
+    if input_path.parent != (root / RUNTIME_DIR).resolve() or input_path.name in {ACTIVE_FILE.name, PENDING_BATCH_HANDOFF_FILE.name, CONTEXT_FILE.name, SUBMITTED_FILE.name}:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_INPUT_MUST_BE_RUNTIME_REQUEST")
+    data = require_dict(read_json(input_path), "batch handoff request")
+    source, successor = require_text(data, "source_batch_id"), require_text(data, "successor_batch_id")
+    if require_text(data, "actor_role") != "project_manager_agent" or source != active.get("batch_id"):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_SOURCE_OR_ROLE_MISMATCH")
+    state = load_project_state(root)
+    if any(row.get("source_batch_id") == source for row in state.get("handoff_history", [])):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_SOURCE_ALREADY_TRANSFERRED")
+    ref = require_dict(data.get("successor_contract"), "successor_contract")
+    if ref.get("successor_batch_id") != successor:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_SUCCESSOR_IDENTITY_MISMATCH")
+    checked_successor_contract(root, ref, source)
+    _, ref = checked_evidence_ref(root, ref)
+    authorization = checked_owner_authorization(root, data.get("owner_authorization"), source, successor)
+    hid, stamp = uuid.uuid4().hex, now_iso()
+    directory = root / BATCH_HANDOFF_HISTORY / hid
+    if directory.exists():
+        raise SystemExit("STANDARD_BATCH_HANDOFF_HISTORY_EXISTS")
+    snapshot = active_path.read_bytes()
+    git = git_info(root)
+    record = {"schema":"batch_handoff/1", "handoff_id":hid, "status":"handed_off",
+        "source_batch_id":source, "source_status":active["status"], "source_stage_id":active["stage_id"],
+        "source_title":active["title"], "source_started_at":active["started_at"],
+        "source_blockers":active.get("blockers", []), "source_active_snapshot_sha256":hashlib.sha256(snapshot).hexdigest(),
+        "successor_batch_id":successor, "successor_contract_path":ref["path"], "successor_contract_sha256":ref["sha256"],
+        "reason":require_text(data, "reason"), "unfinished_work":str_list(data, "unfinished_work", required=True),
+        "transferred_obligations":str_list(data, "transferred_obligations", required=True),
+        "owner_authorization":authorization, "git_head":git["head"], "git_branch":git["branch"],
+        "handed_off_at":stamp, "activation_status":"pending_successor", "consumed_at":None, "consumed_by_batch_id":None}
+    record_bytes = json_bytes(record)
+    marker = {k:record[k] for k in ["handoff_id", "source_batch_id", "successor_batch_id", "source_active_snapshot_sha256"]}
+    marker.update(record_path=(directory / "record.json").relative_to(root).as_posix(), record_sha256=hashlib.sha256(record_bytes).hexdigest())
+    state["last_handed_off_batch"] = {"batch_id":source, "status":"handed_off", "source_status":active["status"], **marker}
+    state.setdefault("handoff_history", []).append(dict(marker))
+    state["pending_batch_handoff"] = marker
+    state["updated_at"] = stamp
+    log, content = log_entry_payload(root, cfg=load_config(root), title=f"{source} handed_off to {successor}", body=f"Source remains {active['status']}; not PASS / not acceptance.\nRecord: {marker['record_path']}")
+    payloads = [(directory / "source_active.json", snapshot), (directory / "record.json", record_bytes),
+                (root / PROJECT_STATE_FILE, json_bytes(state)), (log, content),
+                (root / PENDING_BATCH_HANDOFF_FILE, json_bytes(marker))]
+    payloads.extend(handoff_state_payloads(root, load_config(root), state, None))
+    payloads.extend([(active_path, None), (input_path, None)])
+    try:
+        atomic_file_transaction(payloads, failure_environment="AI_STARTER_TEST_FAIL_BATCH_HANDOFF_AFTER")
+    except BaseException as exc:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_TRANSACTION_FAILED; all files restored: " + str(exc)) from exc
+    args._handoff_transaction_complete = True
+    print("AI_BATCH_HANDED_OFF", source, successor, marker["record_path"])
+    return 0
+
+
+def consume_batch_handoff(root: Path, cfg: dict, state: dict, active: dict, marker: dict, record: dict, request_path: Path) -> None:
+    request_path = request_path.resolve()
+    contract_path = (root / record["successor_contract_path"]).resolve()
+    if request_path != contract_path and request_path.parent != (root / RUNTIME_DIR).resolve():
+        raise SystemExit("STANDARD_BATCH_HANDOFF_START_INPUT_MUST_BE_RUNTIME_OR_CONTRACT")
+    checked_pending_handoff(root)  # Recheck immediately before preparing consumption.
+    if open_changes(root):
+        raise SystemExit("STANDARD_BATCH_HANDOFF_OPEN_CHANGES_BLOCKED")
+    active["inherited_handoff"] = {"handoff_id":record["handoff_id"], "source_batch_id":record["source_batch_id"], "record_path":marker["record_path"],
+        "unfinished_work":record["unfinished_work"], "transferred_obligations":record["transferred_obligations"], "source_blockers":record["source_blockers"],
+        "source_evidence_ref":record["owner_authorization"]["source_ref"]}
+    record = {**record, "activation_status":"consumed", "consumed_at":now_iso(), "consumed_by_batch_id":active["batch_id"]}
+    record_bytes = json_bytes(record)
+    record_hash = hashlib.sha256(record_bytes).hexdigest()
+    # Keep durable navigation hashes current as activation metadata transitions.
+    for entry in [state.get("last_handed_off_batch", {})] + state.get("handoff_history", []):
+        if entry.get("handoff_id") == record["handoff_id"]:
+            entry["record_sha256"] = record_hash
+    state.pop("pending_batch_handoff", None)
+    state["updated_at"] = now_iso()
+    if active.get("layered_test_contract"):
+        state["layered_test_contract"] = True
+    log, content = log_entry_payload(root, cfg, "Named successor started: " + active["batch_id"], "Consumed handoff " + record["handoff_id"] + "; no PASS or acceptance inherited.")
+    payloads = [(root / ACTIVE_FILE, json_bytes(active)), (root / marker["record_path"], record_bytes),
+                (root / PROJECT_STATE_FILE, json_bytes(state)), (log, content)]
+    payloads.extend(handoff_state_payloads(root, cfg, state, active))
+    payloads.append((root / PENDING_BATCH_HANDOFF_FILE, None))
+    if request_path.resolve() != (root / record["successor_contract_path"]).resolve():
+        payloads.append((request_path, None))
+    try:
+        atomic_file_transaction(payloads, failure_environment="AI_STARTER_TEST_FAIL_HANDOFF_START_AFTER")
+    except BaseException as exc:
+        raise SystemExit("STANDARD_BATCH_HANDOFF_START_TRANSACTION_FAILED; all files restored: " + str(exc)) from exc
 
 
 def ai_suspend_for_promotion(args: argparse.Namespace) -> int:
@@ -4867,6 +5068,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ai-change-ready"); p.add_argument("change_id"); p.set_defaults(func=ai_change_ready)
     p = sub.add_parser("ai-rework-ready"); p.set_defaults(func=ai_rework_ready)
     p = sub.add_parser("ai-start"); p.add_argument("--request"); p.set_defaults(func=ai_start)
+    p = sub.add_parser("ai-handoff-batch", help="Standard only; BLOCKED/PARTIAL only; owner-authorized responsibility handoff, not PASS / not acceptance", description="Standard only; BLOCKED/PARTIAL only; owner-authorized responsibility handoff, not PASS / not acceptance")
+    p.add_argument("--input", help="Project-local runtime JSON; default .ai/runtime/batch_handoff.json"); p.set_defaults(func=ai_handoff_batch)
     p = sub.add_parser("ai-finish"); p.add_argument("--result"); p.set_defaults(func=ai_finish)
     p = sub.add_parser("ai-acceptance"); p.add_argument("--input"); p.set_defaults(func=ai_acceptance)
     p = sub.add_parser("pre-commit-check"); p.set_defaults(func=pre_commit_check)

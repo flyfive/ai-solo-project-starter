@@ -1,5 +1,12 @@
 # 变更日志
 
+## V1.9.2
+
+- Standard 新增 `ai-handoff-batch`：真实 BLOCKED/PARTIAL 在具名继任与强绑定所有者授权下移交责任，保留非成功事实，不调用 PASS finalize。
+- durable batch_handoff/1 历史与 runtime successor marker 分离；交接与继任启动均使用现有多文件回滚事务；open changes 拒绝，不迁移 Change。
+- ai-start 重新验证冻结定义、身份与哈希，锁定具名继任；resume/context/memory 和 health 支持此状态。
+- 产品版本升级；PROJECT/state schema_version 仍 1.9.0，旧输入及 Lite promotion 不变；不迁移真实项目。见 UPGRADE_V1.9.2.md。
+
 ## V1.9.1
 
 - 新增兼容的 acceptance/1 合同路径，Candidate/Contract/Harness/Run 独立身份；原请求 schema 不变。
