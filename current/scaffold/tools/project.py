@@ -392,6 +392,14 @@ def atomic_file_transaction(
         raise
 
 
+def resolve_project_input(root: Path, supplied, default: Path | str) -> Path:
+    """Validate before read/delete: local regular files, no links on any component."""
+    extension, _ = context_extension()
+    raw = str(default if supplied is None else supplied)
+    extension.hard_file(root, raw)
+    return extension.safe_path(root, raw)
+
+
 def read_json(path: Path, *, default: Any = _MISSING) -> Any:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1555,7 +1563,7 @@ def ai_resume(args: argparse.Namespace) -> int:
 def ai_audit(args: argparse.Namespace) -> int:
     root = find_root()
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else AUDIT_FILE)
+    input_path = resolve_project_input(root, args.input, AUDIT_FILE)
     result = validate_full_audit(root, require_dict(read_json(input_path), str(input_path)), cfg)
     state = load_project_state(root)
     current_stage = str(state.get("current_stage", "")).strip()
@@ -1621,7 +1629,7 @@ def ai_audit(args: argparse.Namespace) -> int:
 def ai_register_change(args: argparse.Namespace) -> int:
     root = find_root()
     ensure_project_open(root, "登记需求或验收变更")
-    path = root / (Path(args.input) if args.input else CHANGE_REQUEST_FILE)
+    path = resolve_project_input(root, args.input, CHANGE_REQUEST_FILE)
     data = require_dict(read_json(path), str(path))
     change = register_change_data(root, data)
     if path.exists():
@@ -1684,7 +1692,7 @@ def ai_start(args: argparse.Namespace) -> int:
         active = require_dict(read_json(active_path), str(active_path))
         raise SystemExit(f"已有活动批次：{active.get('batch_id', '未知')}。必须先通过唯一关闭流程完成，禁止强制覆盖。")
 
-    request_path = root / (Path(args.request) if args.request else REQUEST_FILE)
+    request_path = resolve_project_input(root, args.request, REQUEST_FILE)
     request = validate_request(require_dict(read_json(request_path), str(request_path)))
     if request.get("execution_mode") == "parallel":
         require_standard_governance(root, "Parallel execution")
@@ -1900,7 +1908,7 @@ def ai_finish(args: argparse.Namespace) -> int:
     ensure_project_open(root, "提交批次结果")
     cfg = load_config(root)
     active = require_dict(read_json(root / ACTIVE_FILE), str(root / ACTIVE_FILE))
-    result_path = root / (Path(args.result) if args.result else RESULT_FILE)
+    result_path = resolve_project_input(root, args.result, RESULT_FILE)
     result = validate_result(
         require_dict(read_json(result_path), str(result_path)),
         cfg,
@@ -1990,7 +1998,7 @@ def ai_acceptance(args: argparse.Namespace) -> int:
     root = find_root()
     ensure_project_open(root, "登记人工验收")
     cfg = load_config(root)
-    path = root / (Path(args.input) if args.input else ACCEPTANCE_FILE)
+    path = resolve_project_input(root, args.input, ACCEPTANCE_FILE)
     data = require_dict(read_json(path), str(path))
     scope = str(data.get("scope", "batch")).strip().lower()
     status_value = require_text(data, "status").lower()
@@ -2473,7 +2481,7 @@ def next_decision_id(text: str) -> str:
 def new_decision(args: argparse.Namespace) -> int:
     root = find_root()
     ensure_project_open(root, "新增项目决策")
-    input_path = root / (Path(args.input) if args.input else RUNTIME_DIR / "decision.json")
+    input_path = resolve_project_input(root, args.input, RUNTIME_DIR / "decision.json")
     data = require_dict(read_json(input_path), str(input_path))
     title, current, reason, impact = [require_text(data, k) for k in ["title", "current", "reason", "impact"]]
     old = str(data.get("old", "无")).strip() or "无"
@@ -2610,7 +2618,7 @@ def ai_handoff_batch(args: argparse.Namespace) -> int:
     if open_changes(root):
         raise SystemExit("STANDARD_BATCH_HANDOFF_OPEN_CHANGES_BLOCKED")
     extension, api = context_extension()
-    input_path = extension.safe_path(root, str(args.input or BATCH_HANDOFF_INPUT_FILE))
+    input_path = resolve_project_input(root, args.input, BATCH_HANDOFF_INPUT_FILE)
     if input_path.parent != (root / RUNTIME_DIR).resolve() or input_path.name in {ACTIVE_FILE.name, PENDING_BATCH_HANDOFF_FILE.name, CONTEXT_FILE.name, SUBMITTED_FILE.name}:
         raise SystemExit("STANDARD_BATCH_HANDOFF_INPUT_MUST_BE_RUNTIME_REQUEST")
     data = require_dict(read_json(input_path), "batch handoff request")
@@ -2711,9 +2719,7 @@ def ai_suspend_for_promotion(args: argparse.Namespace) -> int:
         raise SystemExit(
             "只有已经如实记录为 BLOCKED 或 PARTIAL 的 Lite 批次才能因治理升级挂起。"
         )
-    input_path = root / (
-        Path(args.input) if args.input else GOVERNANCE_SUSPENSION_INPUT_FILE
-    )
+    input_path = resolve_project_input(root, args.input, GOVERNANCE_SUSPENSION_INPUT_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("治理升级挂起只能由项目经理主智能体执行。")
@@ -2889,7 +2895,7 @@ def ai_promote_standard(args: argparse.Namespace) -> int:
                 f"current={sorted(actual_change_ids)}"
             )
 
-    input_path = root / (Path(args.input) if args.input else GOVERNANCE_PROMOTION_INPUT_FILE)
+    input_path = resolve_project_input(root, args.input, GOVERNANCE_PROMOTION_INPUT_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("治理模式升级只能由项目经理主智能体执行。")
@@ -3687,7 +3693,7 @@ def reject_closed_requirement_target(root: Path, release_target: str) -> None:
 def ai_requirement(args: argparse.Namespace) -> int:
     root = find_root()
     ensure_project_open(root, "写入正式需求")
-    input_path = root / (Path(args.input) if args.input else REQUIREMENT_UPDATE_FILE)
+    input_path = resolve_project_input(root, args.input, REQUIREMENT_UPDATE_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     actor_role = require_text(data, "actor_role")
     if actor_role != "project_manager_agent":
@@ -4130,7 +4136,7 @@ def ai_release_baseline(args: argparse.Namespace) -> int:
     ensure_project_open(root, "创建发布基线")
     require_standard_baseline_ready(root, "创建发布基线")
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else RELEASE_BASELINE_FILE)
+    input_path = resolve_project_input(root, args.input, RELEASE_BASELINE_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("发布基线只能由项目经理主智能体角色创建。")
@@ -4529,7 +4535,7 @@ def ai_generate_delivery(args: argparse.Namespace) -> int:
     require_standard_governance(root, "Customer delivery generation")
     ensure_project_open(root, "生成客户交付材料")
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else DELIVERY_REQUEST_FILE)
+    input_path = resolve_project_input(root, args.input, DELIVERY_REQUEST_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("客户交付文档只能由项目经理主智能体角色生成。")
@@ -4758,7 +4764,7 @@ def ai_final_acceptance(args: argparse.Namespace) -> int:
     require_standard_governance(root, "Final acceptance")
     ensure_project_open(root, "登记最终验收")
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else FINAL_ACCEPTANCE_INPUT_FILE)
+    input_path = resolve_project_input(root, args.input, FINAL_ACCEPTANCE_INPUT_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "recorder_role") != "project_manager_agent":
         raise SystemExit("最终验收只能由项目经理主智能体根据项目所有者真实反馈登记。")
@@ -4880,7 +4886,7 @@ def ai_close_project(args: argparse.Namespace) -> int:
     require_standard_governance(root, "Project closure")
     ensure_project_open(root, "项目结案")
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else PROJECT_CLOSE_INPUT_FILE)
+    input_path = resolve_project_input(root, args.input, PROJECT_CLOSE_INPUT_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("项目结案只能由项目经理主智能体角色登记。")
@@ -4993,7 +4999,7 @@ def ai_reopen_project(args: argparse.Namespace) -> int:
     root = find_root()
     require_standard_governance(root, "Project reopen")
     cfg = load_config(root)
-    input_path = root / (Path(args.input) if args.input else PROJECT_REOPEN_INPUT_FILE)
+    input_path = resolve_project_input(root, args.input, PROJECT_REOPEN_INPUT_FILE)
     data = require_dict(read_json(input_path), str(input_path))
     if require_text(data, "actor_role") != "project_manager_agent":
         raise SystemExit("项目重新打开只能由项目经理主智能体角色登记。")

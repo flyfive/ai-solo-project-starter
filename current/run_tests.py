@@ -87,7 +87,7 @@ def run_case(test_id: str) -> CaseResult:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--report-dir', type=Path, default=ROOT.parent / (ROOT.name + '_validation'))
+    parser.add_argument('--report-dir', type=Path, default=ROOT.parent / 'validation' / 'local-run')
     parser.add_argument('--verbose', action='store_true', help='Print every passing case as well as failures')
     args = parser.parse_args()
     report_root = args.report_dir.resolve()

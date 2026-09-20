@@ -20,7 +20,7 @@ class PublicReadinessTests(unittest.TestCase):
 
     def test_author_example_is_labeled_and_empty_target_stays_unset(self):
         html=(ROOT/'使用说明.html').read_text('utf-8')
-        self.assertIn('预填为作者示例，请核对实际路径',html)
+        self.assertIn('placeholder 仅为作者示例',html)
         field=re.search(r'<input id="targetPath"[^>]*>',html).group()
         self.assertNotIn('value=',field)
         self.assertIn('执行前必须核对上述模板目录在本机存在',html)
@@ -68,7 +68,7 @@ class PublicReadinessTests(unittest.TestCase):
     def test_current_only_distribution_carries_license_into_project(self):
         base=make_temp_dir('current-only-license-');self.addCleanup(remove_tree,base)
         template=base/'template only';template.mkdir()
-        for name in ['starter.py','profiles.toml','LICENSE','LICENSE_STATUS.md']:
+        for name in ['starter.py','path_safety.py','profiles.toml','LICENSE','LICENSE_STATUS.md']:
             shutil.copy2(ROOT/name,template/name)
         shutil.copytree(ROOT/'scaffold',template/'scaffold')
         target=base/'new project'

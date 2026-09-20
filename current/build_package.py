@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import sys
 import re
 import tempfile
 import zipfile
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+from path_safety import ordinary_tree_files, reject_link_ancestors
 
 EXCLUDED_DIRECTORIES = {
     ".git", ".test-runtime", ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -20,7 +24,7 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 def package_files(source: Path, excluded_paths: set[Path]) -> list[Path]:
     files: list[Path] = []
-    for path in source.rglob("*"):
+    for path in ordinary_tree_files(source, EXCLUDED_DIRECTORIES, EXCLUDED_SUFFIXES):
         relative = path.relative_to(source)
         if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
             continue
@@ -115,11 +119,13 @@ def verify_archive(archive: Path, source: Path, package_name: str, files: list[P
 
 
 def build(source: Path, output_dir: Path, *, force: bool) -> tuple[Path, Path, str, int]:
+    reject_link_ancestors(source)
     source = source.resolve()
     output_dir = output_dir.resolve()
     if not source.is_dir():
         raise SystemExit(f"source directory does not exist: {source}")
     version_path = source / "VERSION"
+    reject_link_ancestors(version_path)
     if not version_path.is_file():
         raise SystemExit(f"VERSION is missing: {version_path}")
     version = version_path.read_text(encoding="utf-8").strip()

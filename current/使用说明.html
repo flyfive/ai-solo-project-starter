@@ -123,8 +123,8 @@
     <section class="card">
       <h2><span class="step">1</span>填写项目信息</h2>
 
-      <label for="templatePath">模板目录（预填为作者示例，请核对实际路径）</label>
-      <input id="templatePath" value="D:\project\AI_Solo_Project_Starter\current">
+      <label for="templatePath">模板目录（请填写实际路径；placeholder 仅为作者示例）</label>
+      <input id="templatePath" value="" placeholder="例如 D:\project\AI_Solo_Project_Starter\current">
 
       <label for="projectName">项目名称</label>
       <input id="projectName" placeholder="例如：个人财务管理工具">
@@ -193,7 +193,7 @@
     }
 
     function updatePrompts() {
-      const templatePath = valueOf("templatePath", "D:\\project\\AI_Solo_Project_Starter\\current");
+      const templatePath = valueOf("templatePath", "尚未填写，请先确认真实模板路径");
       const projectName = valueOf("projectName", "尚未填写");
       const description = valueOf("description", "尚未填写，请先向我确认");
       const targetPath = valueOf("targetPath", "尚未填写");
@@ -215,7 +215,7 @@
 项目类型：${profile}
 治理模式：${governanceText}
 
-执行前必须核对上述模板目录在本机存在，并核对目标目录是独立的新项目位置；预填或留空回退只是作者示例，不是自动识别，未填写或不正确时先更正，不按示例盲目创建。
+执行前必须核对上述模板目录在本机存在，并核对目标目录是独立的新项目位置；placeholder 只是作者示例，不是自动识别；未填写或不正确时先更正，先确认真实模板路径再执行，不按示例盲目创建。
 请先阅读模板中的 README.md 和 QUICK_START.md，并使用模板提供的正式初始化入口创建项目。不要修改模板目录，也不要把模板根目录直接当成正式项目。
 
 初始化必须完成 Git 仓库、初始提交、Git Hook 和健康检查。完成后告诉我：

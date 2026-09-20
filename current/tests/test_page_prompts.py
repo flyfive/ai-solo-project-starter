@@ -80,16 +80,19 @@ class PagePromptTests(unittest.TestCase):
                 for phrase in ['START_HERE.md','PROJECT.toml','当前状态与活动批次manifest','按R/C/DEC引用加载相关正式正文与AC','不默认全文读取','先建立或确认需求基线，不要立即开始写代码','项目持久文档']:
                     self.assertIn(phrase,row['start'])
 
-    def test_initialization_and_paths_remain_unchanged(self):
+    def test_initialization_paths_and_explicit_empty_state(self):
         modes={'lite':'lite，极简治理','standard':'standard，标准治理','auto':'auto，由 AI 根据项目描述建议并说明理由；客户交付、权限、敏感数据、支付、迁移、生产部署、多平台或硬件必须建议 Standard'}
         for row in self.rows:
-            path=row['path'].strip() or r'D:\project\AI_Solo_Project_Starter\current'
+            path=row['path'].strip() or '尚未填写，请先确认真实模板路径'
             with self.subTest(mode=row['mode'],path=path):
                 self.assertIn('模板目录：'+path,row['init'])
                 self.assertIn('治理模式：'+modes[row['mode']],row['init'])
                 for phrase in ['项目名称：示例','项目简介与最终交付目标：测试描述',r'目标目录：E:\sample','项目类型：generic','初始化必须完成 Git 仓库、初始提交、Git Hook 和健康检查']:
                     self.assertIn(phrase,row['init'])
-                self.assertEqual(self.rows[0]['path'],r'D:\project\AI_Solo_Project_Starter\current')
+                self.assertEqual(self.rows[0]['path'],'')
+                if not row['path'].strip():
+                    self.assertNotIn(r'D:\project\AI_Solo_Project_Starter\current',row['init'])
+                    self.assertIn('先确认真实模板路径',row['init'])
 
     def test_actual_checkout_path_is_preserved(self):
         rows=[r for r in self.rows if r['path']==str(ROOT)]

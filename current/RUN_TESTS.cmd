@@ -16,13 +16,13 @@ echo ERROR: Python 3.11 or newer was not found. 1>&2
 exit /b 2
 
 :run_py
-py -3 -B "%SCRIPT_DIR%run_tests.py"
+py -3 -B "%SCRIPT_DIR%run_tests.py" %*
 exit /b %errorlevel%
 
 :run_python3
-python3 -B "%SCRIPT_DIR%run_tests.py"
+python3 -B "%SCRIPT_DIR%run_tests.py" %*
 exit /b %errorlevel%
 
 :run_python
-python -B "%SCRIPT_DIR%run_tests.py"
+python -B "%SCRIPT_DIR%run_tests.py" %*
 exit /b %errorlevel%

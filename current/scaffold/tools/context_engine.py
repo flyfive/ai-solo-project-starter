@@ -645,7 +645,7 @@ def unit_command(args, p):
     p.ensure_project_open(root, '记录内部工作单元')
     active = p.read_json(root / p.ACTIVE_FILE)
     ensure_fresh(root, p, active)
-    path = root / (args.input or '.ai/runtime/unit_result.json')
+    path = p.resolve_project_input(root, args.input, '.ai/runtime/unit_result.json')
     data = p.read_json(path)
     if data.get('actor_role') not in {'project_manager_agent', 'code_executor'}:
         raise SystemExit('Unit results require PM or code_executor role')
@@ -689,7 +689,7 @@ def unit_command(args, p):
 def evidence_command(args, p):
     root = p.find_root()
     p.ensure_project_open(root, '保存执行证据')
-    data = p.read_json(root / (args.input or '.ai/runtime/evidence_request.json'))
+    data = p.read_json(p.resolve_project_input(root, args.input, '.ai/runtime/evidence_request.json'))
     active = p.read_json(root / p.ACTIVE_FILE, default={})
     if active:
         ensure_fresh(root, p, active)
@@ -883,7 +883,7 @@ def decision_command(args, p):
     if p.governance_mode(root) == 'lite':
         return p.new_decision(args)
     p.ensure_project_open(root, '新增项目决策')
-    path = root / (args.input or '.ai/runtime/decision.json')
+    path = p.resolve_project_input(root, args.input, '.ai/runtime/decision.json')
     data = p.read_json(path)
     if data.get('actor_role', 'project_manager_agent') != 'project_manager_agent':
         raise SystemExit('Only PM may write a formal decision')
@@ -904,6 +904,11 @@ def decision_command(args, p):
 def run(args, p):
     root = p.find_root()
     command = args.command
+    # Validate explicit CLI inputs before wrappers archive results or mutate state.
+    for field in ('input', 'request', 'result'):
+        value = getattr(args, field, None)
+        if value is not None:
+            p.resolve_project_input(root, value, '')
     if command == 'ai-context':
         if args.action == 'investigation':
             return investigation_command(args, p)
@@ -951,14 +956,14 @@ def run(args, p):
     before_active = p.read_json(root / p.ACTIVE_FILE, default=None)
     result_data = None
     if command == 'ai-finish':
-        result_data = p.read_json(root / (args.result or p.RESULT_FILE))
+        result_data = p.read_json(p.resolve_project_input(root, args.result, p.RESULT_FILE))
         # Every submitted attempt is retained, including rejected or failed attempts.
         archive(root, p, 'batches', (before_active or {}).get('batch_id', 'unknown'), {'active_batch': before_active, 'result': result_data, 'submitted_at': p.now_iso()})
         finish_guard(root, p, result_data)
     if command == 'ai-acceptance' and before_active:
         ensure_fresh(root, p, before_active)
     if command == 'ai-acceptance':
-        acceptance = p.read_json(root / (args.input or p.ACCEPTANCE_FILE))
+        acceptance = p.read_json(p.resolve_project_input(root, args.input, p.ACCEPTANCE_FILE))
         if acceptance.get('status') == 'passed' and before_active:
             submitted = p.read_json(root / p.SUBMITTED_FILE, default=None)
             if submitted:

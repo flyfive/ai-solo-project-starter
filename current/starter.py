@@ -25,6 +25,9 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise SystemExit("需要 Python 3.11 或更高版本。") from exc
 
+sys.dont_write_bytecode = True
+from path_safety import ordinary_tree_files
+
 BASE_DIR = Path(__file__).resolve().parent
 SCAFFOLD_DIR = BASE_DIR / "scaffold"
 PROFILES_FILE = BASE_DIR / "profiles.toml"
@@ -349,6 +352,21 @@ def publish_atomically(staging: Path, target: Path, force: bool) -> Path | None:
     return backup
 
 
+def template_workspace() -> Path:
+    # Repository layout: <workspace>/current/starter.py. Standalone extracted
+    # packages protect their own source root, not unrelated sibling projects.
+    parent = BASE_DIR.parent
+    if BASE_DIR.name == "current" and ((parent / "START_HERE.md").is_file() or (parent / ".git").exists()):
+        return parent.resolve()
+    return BASE_DIR.resolve()
+
+
+def reject_template_overlap(target: Path) -> None:
+    workspace = template_workspace()
+    if target == workspace or target.is_relative_to(workspace) or workspace.is_relative_to(target):
+        raise SystemExit("目标目录与模板工作区重叠，拒绝初始化: " + str(target))
+
+
 def create_project(args: argparse.Namespace) -> int:
     profiles = load_profiles()
     profile_names = sorted(profiles)
@@ -387,6 +405,8 @@ def create_project(args: argparse.Namespace) -> int:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
     target = target.resolve()
+    reject_template_overlap(target)
+    scaffold_files = sorted(ordinary_tree_files(SCAFFOLD_DIR, {"__pycache__"}, {".pyc", ".pyo"}))
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not target.is_dir():
         print(f"错误：目标路径不是目录：{target}", file=sys.stderr)
@@ -438,7 +458,7 @@ def create_project(args: argparse.Namespace) -> int:
     try:
         created: list[Path] = []
         standard_templates: dict[str, str] = {}
-        for source in sorted(SCAFFOLD_DIR.rglob("*")):
+        for source in scaffold_files:
             if not source.is_file():
                 continue
             relative = source.relative_to(SCAFFOLD_DIR)
@@ -461,7 +481,7 @@ def create_project(args: argparse.Namespace) -> int:
         )
         values["STANDARD_MODE_TEMPLATES_SHA256"] = standard_content_hash
 
-        for source in sorted(SCAFFOLD_DIR.rglob("*")):
+        for source in scaffold_files:
             if not source.is_file():
                 continue
             relative = source.relative_to(SCAFFOLD_DIR)

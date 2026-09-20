@@ -130,3 +130,5 @@ action=record 保存现有格式 debug_checkpoint，可选 candidate 清单、fa
 历史在 `.ai/history/batch_handoffs/<id>/`；源快照保留原字节，record 为 batch_handoff/1、status=handed_off。运行锁 `.ai/runtime/pending_batch_handoff.json` 只允许具名继任启动。将合同作为 `ai-start --request docs/successor.json` 输入，或复制相同定义到普通 batch_request.json；原启动门禁不变。启动重新核对全部绑定并事务消费 marker，历史 activation_status 改为 consumed，其余源事实不改写。失败保留请求与锁，禁止手工删除以启动无关任务。
 
 ai-resume 显示 start_handoff_successor；按需读该记录的责任和证据引用。继任不继承任何 PASS/人工验收/发布批准。health 报身份漂移或孤儿锁时停止处理，不把错误当作无交接。文件授权是可审计声明，不是身份认证；多文件事务针对本地单写者异常回滚，不承诺掉电/并发隔离。
+
+CLI 的 --input/--request/--result 仅接受项目根目录内的相对普通文件路径；绝对路径、..、symlink/junction/reparse 及链接祖先均拒绝。默认 runtime 请求与项目内自定义文件路径仍可用，成功后的请求清理保持原命令语义。该校验不提供并发文件替换攻击下的操作系统沙箱保证。
