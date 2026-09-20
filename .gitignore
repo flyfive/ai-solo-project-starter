@@ -8,7 +8,6 @@ __pycache__/
 
 # Local history and private maintenance; no disk deletion.
 /maintenance/*
-!/maintenance/PUBLIC_READINESS.md
 /current/.github/workflows/regression.yml
 /current/VALIDATION_REPORT.md
 /current/CONTEXT_EFFICIENCY_REPORT.md
