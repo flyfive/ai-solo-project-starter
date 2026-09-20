@@ -14,3 +14,5 @@
 10. 不删除旧副本，清理等待用户确认；不使用镜像清理或盲目覆盖。不得进入或修改未授权业务项目，权限申请限具体来源。
 
 11. 公开分享不等于允许发布：不默认创建/修改远端、推送、上传源码或扫描结果。已确认 MIT，版权署名 FeiXiaorong；第三方材料保留适用许可，后续许可变更须经所有者确认；Git忽略不清除可达历史，公开前分别检查候选文件与拟推送历史。
+
+12. 日常仅在 main 维护并与 origin/main 同步。提交前运行 `git status --short` 和 `git diff --check`，核对实际暂存清单；涉及 scaffold、测试 fixture、本地路径或日志/证据时，另检查 tracked diff 无真实下游项目资料。私人 maintenance/validation/versions/releases 不入提交，无需新增发布仪式。
